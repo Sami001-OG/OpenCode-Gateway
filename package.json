@@ -1,0 +1,57 @@
+{
+  "name": "opencode-telegram-gateway",
+  "version": "0.2.0",
+  "description": "Full OpenCode CLI gateway for Telegram. Every tool, every command, from your phone. Also an OpenCode plugin.",
+  "type": "module",
+  "main": "plugin.js",
+  "exports": {
+    ".": "./plugin.js",
+    "./plugin": "./src/plugin.js",
+    "./service": "./src/opencode-service.js"
+  },
+  "bin": {
+    "opencode-gateway": "src/cli.js",
+    "opencode-telegram-gateway": "src/cli.js"
+  },
+  "files": [
+    "src/",
+    "plugin.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/index.js",
+    "gateway": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --check src/index.js && node --check src/opencode-service.js && node --check src/plugin.js && node --check src/net.js && node --check src/cli.js && node --check src/commands.js && node --check plugin.js && echo OK"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "telegram",
+    "ai-coding",
+    "gateway",
+    "bot"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sami001-OG/OpenCode-Gateway.git"
+  },
+  "homepage": "https://github.com/Sami001-OG/OpenCode-Gateway",
+  "bugs": "https://github.com/Sami001-OG/OpenCode-Gateway/issues",
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.18.0",
+    "dotenv": "^16.4.5",
+    "https-proxy-agent": "^9.1.0",
+    "telegraf": "^4.16.3"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.18.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    }
+  }
+}
