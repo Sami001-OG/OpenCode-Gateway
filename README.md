@@ -61,31 +61,43 @@ Then **@userinfobot** → copy your numeric chat ID.
 
 ```powershell
 git clone https://github.com/Sami001-OG/OpenCode-Gateway.git
-cd opencode-telegram-gateway
+cd OpenCode-Gateway
 npm install
-node src/cli.js setup     # wizard: bot token, your user ID, folder (validates + heals network + publishes menu)
+powershell -ExecutionPolicy Bypass -File .\install-wrapper.ps1  # one time: adds `opencode setup` + `opencode gateway ...`
+# restart your terminal, then:
+opencode setup     # wizard inside the opencode TUI: bot token, your user ID, folder — then it auto-starts
+```
+
+That's it. The wizard validates your bot, heals restricted networks automatically,
+writes `.env`, publishes the Menu ☰ button, and starts the gateway.
+
+<details>
+<summary><b>Alternative: terminal wizard / global install</b></summary>
+
+Without the wrapper (or on any machine with Node 20+):
+
+```powershell
+node src/cli.js setup     # same wizard, plain terminal prompts
 node src/cli.js start     # background daemon; `restart`, `stop`, `status`, `logs` likewise
 ```
 
 Or global (use from any folder): `npm i -g opencode-telegram-gateway`, then `opencode-gateway setup` / `opencode-gateway start`.
 
+</details>
+
 <details>
-<summary><b>⌨️ Want the exact spelling <code>opencode gateway start</code>?</b></summary>
+<summary><b>🌐 Restricted networks (Telegram blocked/throttled)</b></summary>
 
-The `opencode` CLI doesn't dispatch unknown words to packages, so this repo ships
-`opencode-gateway` plus a tiny forwarder. PowerShell (`$PROFILE`):
+Setup connects automatically — no accounts, no VPN required in most cases:
 
-```powershell
-function opencode { if ($args[0] -eq 'gateway') { opencode-gateway @($args | Select-Object -Skip 1) } else { & opencode.exe @args } }
-```
+1. **direct** — plain `api.telegram.org` (works for almost everyone);
+2. **pinned endpoint** — auto TLS-scan for a reachable Telegram frontend, verified before use;
+3. **`HTTPS_PROXY`** — used automatically if set;
+4. **clear diagnosis** — if all fail you get the exact layer that broke plus options (VPN, proxy, or self-hosted relay).
 
-Bash/Zsh (`~/.bashrc` / `~/.zshrc`):
-
-```sh
-opencode() { if [ "$1" = "gateway" ]; then shift; opencode-gateway "$@"; else command opencode "$@"; fi }
-```
-
-Then `opencode gateway setup|start|stop|restart|status|logs` works, everything else passes through untouched.
+Power users can point everything at their own reverse proxy (generic — any proxy
+you trust, no vendor needed) via `TELEGRAM_API_ROOT`. Restarts reuse the warm
+server (attach mode), so they take seconds, not minutes.
 
 </details>
 
@@ -120,8 +132,8 @@ npx opencode-telegram-gateway
 |---|---|
 | plain text | `session.prompt` — agent with **every tool** |
 | `/new [title]` | `session.create` (fresh context) |
-| `/sessions` | `session.list` |
-| `/use <id>` | switch active session |
+| `/sessions` | `session.list` — numbered, by name, current marked ▶ |
+| `/use <number, name, or id>` | switch active session |
 | `/abort` | `session.abort` |
 | `/share` / `/unshare` | share link on/off |
 | `/fork` | `session.fork` (branch it) |
@@ -225,6 +237,7 @@ TELEGRAM_NOTIFY_ON=session.idle,session.error,permission.asked
 | `TELEGRAM_NOTIFY_CHAT_IDS` | plugin | where pushes go |
 | `TELEGRAM_API_IP` | – | pin `api.telegram.org` to a reachable DC IP (restricted networks, no admin needed) |
 | `HTTPS_PROXY` | – | proxy for Telegram traffic (e.g. where the direct route is blocked) |
+| `TELEGRAM_API_ROOT` | – | custom Bot API root or trusted reverse proxy (defaults to `https://api.telegram.org`) |
 
 ---
 

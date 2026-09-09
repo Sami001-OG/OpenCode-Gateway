@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import http from "node:http";
 import readline from "node:readline";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -93,6 +94,7 @@ function writeEnv(obj) {
     "TELEGRAM_BOT_TOKEN", "ALLOWED_USER_IDS", "TELEGRAM_NOTIFY_CHAT_IDS",
     "WORK_DIR", "OPENCODE_SERVER_URL", "OPENCODE_HOSTNAME", "OPENCODE_PORT",
     "OPENCODE_MODEL", "OPENCODE_AGENT", "CLI_ENABLED", "TELEGRAM_API_IP", "HTTPS_PROXY",
+    "TELEGRAM_API_ROOT",
   ];
   const lines = ["# Managed by `opencode-gateway setup` - secrets stay here, never commit."];
   for (const k of keys) if (obj[k] !== undefined && obj[k] !== "") lines.push(`${k}=${obj[k]}`);
@@ -104,44 +106,14 @@ function writeEnv(obj) {
 async function net() {
   return import(path.join(PKG_ROOT, "src", "net.js"));
 }
-async function botGetMe(token, pin = "") {
-  const prev = process.env.TELEGRAM_API_IP;
-  if (pin !== undefined) process.env.TELEGRAM_API_IP = pin;
-  try {
-    const { telegramApi } = await net();
-    const realToken = process.env.TELEGRAM_BOT_TOKEN;
-    process.env.TELEGRAM_BOT_TOKEN = token;
-    try {
-      return await telegramApi("getMe", {});
-    } finally {
-      process.env.TELEGRAM_BOT_TOKEN = realToken;
-    }
-  } finally {
-    if (prev === undefined) delete process.env.TELEGRAM_API_IP;
-    else process.env.TELEGRAM_API_IP = prev;
-  }
-}
-async function findWorkingDc() {
-  // TLS-scan a few known Telegram frontends for a genuine api.telegram.org cert.
-  const { default: tls } = await import("node:tls");
-  const candidates = ["149.154.167.220", "149.154.167.51", "149.154.166.120", "91.108.56.100", "149.154.175.100"];
-  const tryIp = (ip) => new Promise((res) => {
-    const s = tls.connect({ host: ip, port: 443, servername: "api.telegram.org", timeout: 6000 }, () => {
-      const good = s.authorized && /telegram\.org/i.test(String(s.getPeerCertificate()?.subjectaltname || ""));
-      s.destroy();
-      res(good ? ip : null);
-    });
-    s.on("timeout", () => { s.destroy(); res(null); });
-    s.on("error", () => res(null));
-  });
-  const results = await Promise.all(candidates.map(tryIp));
-  return results.find(Boolean) || null;
-}
 
 // ---------- setup wizard ----------
 async function setup() {
   banner();
   const env = readEnv();
+  // Earlier setup choices (custom root / proxy) participate in all checks below.
+  if (env.TELEGRAM_API_ROOT && !process.env.TELEGRAM_API_ROOT) process.env.TELEGRAM_API_ROOT = env.TELEGRAM_API_ROOT;
+  if (env.HTTPS_PROXY && !process.env.HTTPS_PROXY && !process.env.https_proxy) process.env.HTTPS_PROXY = env.HTTPS_PROXY;
   const nonInteractive = !!flags.yes;
   if (!process.stdin.isTTY && !nonInteractive && !flags.token) {
     console.error("No TTY and no --token: re-run with --yes plus --token/--user-id/--work-dir, or run interactively.");
@@ -156,32 +128,41 @@ async function setup() {
   }
   if (!token) { console.error("Bot token is required."); process.exit(1); }
 
-  // 2. reachability: direct -> DC pin -> proxy advice
+  // 2. reachability: direct -> pinned DC -> proxy -> clear diagnosis (automatic)
   let pin = env.TELEGRAM_API_IP || "";
   let me = null;
   if (!flags["skip-checks"]) {
-    info("Checking route to Telegram…");
-    try { me = await botGetMe(token, ""); } catch {}
-    if (me?.ok) {
-      ok(`Bot found: @${me.result.username} — direct route works.`);
-      pin = "";
+    info("Checking route to Telegram (direct → fallback endpoints)…");
+    const { resolveTelegramRoute } = await net();
+    // A custom root or proxy from an earlier setup participates automatically.
+    if (env.TELEGRAM_API_ROOT) process.env.TELEGRAM_API_ROOT = env.TELEGRAM_API_ROOT;
+    if (env.HTTPS_PROXY) { process.env.HTTPS_PROXY = env.HTTPS_PROXY; }
+    const verdict = await resolveTelegramRoute(token);
+    if (verdict.bot) {
+      me = { ok: true, result: verdict.bot };
+      pin = verdict.pin;
+      const how = { direct: "direct route works", pinned: `via verified endpoint ${pin}`, proxy: "via proxy", "custom-root": "via custom API root" }[verdict.mode];
+      ok(`Bot found: @${verdict.bot.username} (${how}).`);
+    } else if (verdict.diagnosis.some((d) => d.includes("rejected"))) {
+      warn("Telegram rejected the token (invalid or revoked). Get a fresh one from @BotFather.");
+      if (!nonInteractive && !(await askYesNo("Continue anyway", false))) process.exit(0);
     } else {
-      warn("Direct route failed — scanning for a reachable Telegram endpoint…");
-      const found = await findWorkingDc();
-      if (found) {
-        pin = found;
-        try { me = await botGetMe(token, pin); } catch {}
-        if (me?.ok) ok(`Bot found: @${me.result.username} (via pinned endpoint ${pin}).`);
-        else warn("Endpoint found but bot check failed — continuing, will verify at start.");
-      } else {
-        warn("No reachable endpoint. If you have a VPN/proxy, turn it on (or set HTTPS_PROXY), then continue.");
-        if (!nonInteractive && !(await askYesNo("Continue setup anyway", true))) process.exit(0);
+      warn("No route to Telegram from here:");
+      for (const d of verdict.diagnosis) info(`  • ${d}`);
+      if (!nonInteractive && process.stdin.isTTY) {
+        const px = await ask("HTTPS proxy URL (empty to skip — VPN also works)", env.HTTPS_PROXY || "");
+        if (px) {
+          process.env.HTTPS_PROXY = px;
+          env.HTTPS_PROXY = px;
+          const retry = await resolveTelegramRoute(token);
+          if (retry.bot) {
+            me = { ok: true, result: retry.bot };
+            ok(`Bot found: @${retry.bot.username} (via proxy).`);
+          } else warn("Proxy didn't help either — continuing, will verify at start.");
+        }
       }
+      if (!me && !nonInteractive && !(await askYesNo("Continue setup anyway", true))) process.exit(0);
     }
-  }
-  if (me && !me.ok) {
-    warn("Telegram rejected the token (invalid or revoked). Get a fresh one from @BotFather.");
-    if (!nonInteractive && !(await askYesNo("Continue anyway", false))) process.exit(0);
   }
 
   // 3. user id: auto-detect via /start, else manual
@@ -221,6 +202,7 @@ async function setup() {
     CLI_ENABLED: env.CLI_ENABLED || "true",
     TELEGRAM_API_IP: pin,
     HTTPS_PROXY: env.HTTPS_PROXY || "",
+    TELEGRAM_API_ROOT: env.TELEGRAM_API_ROOT || "",
   });
   ok(`Saved ${ENV_FILE} (token stays secret, never commit).`);
 
@@ -230,6 +212,8 @@ async function setup() {
       const { COMMANDS } = await import(path.join(PKG_ROOT, "src", "commands.js"));
       process.env.TELEGRAM_BOT_TOKEN = token;
       if (pin) process.env.TELEGRAM_API_IP = pin;
+      if (env.TELEGRAM_API_ROOT) process.env.TELEGRAM_API_ROOT = env.TELEGRAM_API_ROOT;
+      if (env.HTTPS_PROXY) process.env.HTTPS_PROXY = env.HTTPS_PROXY;
       const { telegramApi } = await net();
       const r = await telegramApi("setMyCommands", { commands: COMMANDS.map(([command, description]) => ({ command, description })) });
       if (r.ok) ok("Published the Menu ☰ button with all commands.");
@@ -334,6 +318,40 @@ function procName(pid) {
     return fs.readFileSync(`/proc/${pid}/comm`, "utf8").trim();
   } catch { return null; }
 }
+function procParent(pid) {
+  try {
+    if (process.platform === "win32") {
+      const n = execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').ParentProcessId"`,
+        { encoding: "utf8", timeout: 15000 }
+      ).trim();
+      return n ? Number(n) : null;
+    }
+    return null;
+  } catch { return null; }
+}
+
+// Is something on this port already an opencode server we can reuse?
+// (Warm restarts then skip the slow cold boot entirely.)
+function probeOpencodeServer(hostname, port, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { hostname, port, path: "/session", timeout: timeoutMs },
+      (res) => {
+        let body = "";
+        res.on("data", (d) => { body += d; });
+        res.on("end", () => {
+          try {
+            const j = JSON.parse(body);
+            resolve(res.statusCode === 200 && Array.isArray(j) ? true : false);
+          } catch { resolve(false); }
+        });
+      }
+    );
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+  });
+}
 
 async function cmdStart() {
   if (!fs.existsSync(ENV_FILE)) {
@@ -344,22 +362,35 @@ async function cmdStart() {
   if (old) { console.log(`Already running (pid ${old}). Use \`restart\` to bounce it.`); return; }
   const env = readEnv();
   const port = Number(env.OPENCODE_PORT || 4096);
+  const hostname = env.OPENCODE_HOSTNAME || "127.0.0.1";
   const holder = portOwner(port);
-  if (holder) {
+  let attachUrl = env.OPENCODE_SERVER_URL || "";
+  if (holder && !attachUrl) {
     const name = procName(holder) || "?";
-    console.error(`Port ${port} is held by ${name} (pid ${holder}). Stop it or change OPENCODE_PORT, then retry.`);
-    process.exit(1);
+    if (/opencode/i.test(name) && await probeOpencodeServer(hostname, port)) {
+      // Warm server already here (e.g. left running) — attach instead of
+      // cold-booting. Restarts become instant.
+      attachUrl = `http://${hostname}:${port}`;
+      ok(`Warm opencode server found (pid ${holder}) — attaching, no cold boot.`);
+    } else {
+      console.error(`Port ${port} is held by ${name} (pid ${holder}). Stop it or change OPENCODE_PORT, then retry.`);
+      process.exit(1);
+    }
   }
+  const t0 = Date.now();
   const logFd = fs.openSync(path.join(DIR, LOG_FILE), "a");
   const errFd = fs.openSync(path.join(DIR, ERR_FILE), "a");
+  const childEnv = { ...process.env };
+  if (attachUrl && !childEnv.OPENCODE_SERVER_URL) childEnv.OPENCODE_SERVER_URL = attachUrl;
   const child = spawn(process.execPath, [GATEWAY_ENTRY], {
-    cwd: DIR, detached: true, stdio: ["ignore", logFd, errFd], env: { ...process.env },
+    cwd: DIR, detached: true, stdio: ["ignore", logFd, errFd], env: childEnv,
   });
   child.unref();
-  fs.writeFileSync(path.join(DIR, PID_FILE), JSON.stringify({ pid: child.pid, startedAt: Date.now() }));
-  console.log(`Starting gateway (pid ${child.pid})… logs: ${path.join(DIR, LOG_FILE)}`);
-  // wait for online marker
+  fs.writeFileSync(path.join(DIR, PID_FILE), JSON.stringify({ pid: child.pid, startedAt: Date.now(), attached: !!attachUrl }));
+  console.log(`Starting gateway (pid ${child.pid})${attachUrl ? " [attached mode]" : ""}… logs: ${path.join(DIR, LOG_FILE)}`);
+  // wait for online marker, showing live progress from the log
   const logPath = path.join(DIR, LOG_FILE);
+  let lastLine = "", warnedNet = false;
   for (let i = 0; i < 24; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     if (!pidAlive(child.pid)) {
@@ -368,13 +399,22 @@ async function cmdStart() {
       process.exit(1);
     }
     const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
-    if (log.includes("gateway online")) { ok("Gateway online — send /start to your bot."); return; }
-    if (/launch failed/i.test(log)) info("Still retrying Telegram (VPN/route?) — leaving it to retry in background.");
+    if (log.includes("gateway online")) { ok(`Gateway online in ${Math.round((Date.now() - t0) / 1000)}s — send /start to your bot.`); return; }
+    const lines = log.trim().split(/\r?\n/);
+    const cur = lines[lines.length - 1] || "";
+    if (!warnedNet && /launch failed|still unreachable/i.test(log)) {
+      warnedNet = true;
+      info("Telegram unreachable — gateway keeps retrying in background (VPN/proxy?). Server side is up.");
+    }
+    if (cur !== lastLine) {
+      lastLine = cur;
+      info(`[${Math.round((Date.now() - t0) / 1000)}s] ${cur.slice(0, 110)}`);
+    }
   }
-  warn("Still booting (opencode server is slow on first run). Check `opencode-gateway status`.");
+  warn("Still booting (first-ever opencode boot warms caches: models, LSP, plugins). Check `opencode-gateway status`.");
 }
 
-async function cmdStop() {
+async function cmdStop({ keepServer = false } = {}) {
   const pid = readPid(DIR);
   if (!pid) { console.log("Not running (no live pidfile)."); }
   else {
@@ -382,14 +422,22 @@ async function cmdStop() {
     catch (e) { warn(`Could not stop pid ${pid}: ${e.message}`); }
     fs.rmSync(path.join(DIR, PID_FILE), { force: true });
   }
-  // free the opencode server port if an orphaned serve still holds it
+  if (keepServer) return; // restart path: leave the warm server for attach mode
+  // free the port only if the holder is OURS (child of the stopped gateway)
+  // or an orphan — never touch a foreign `opencode serve` / TUI server.
   const env = readEnv();
   const port = Number(env.OPENCODE_PORT || 4096);
   await new Promise((r) => setTimeout(r, 2000));
   const holder = portOwner(port);
   if (holder && /opencode/i.test(procName(holder) || "")) {
-    try { process.kill(holder); ok(`Freed port ${port} (stale opencode server).`); }
-    catch {}
+    const parent = procParent(holder);
+    const parentAlive = parent ? pidAlive(parent) : false;
+    if (!parentAlive) {
+      try { process.kill(holder); ok(`Freed port ${port} (orphaned opencode server).`); }
+      catch {}
+    } else {
+      warn(`Port ${port} still held by pid ${holder} (belongs to live process ${parent}) — left alone.`);
+    }
   }
 }
 
@@ -420,7 +468,7 @@ async function main() {
       Interactive wizard: validates bot, heals restricted networks, writes .env, publishes menu.
   start [--dir DIR]     Start the gateway in the background.
   stop [--dir DIR]      Stop it (also frees a stale opencode server port).
-  restart [--dir DIR]   Stop + start.
+  restart [--dir DIR]   Fast restart (keeps the warm server, attaches instantly).
   status [--dir DIR]    pid, port, config sanity.
   logs [--dir DIR] [-n 60]   Tail the gateway log.`);
     return;
@@ -428,7 +476,7 @@ async function main() {
   if (cmd === "setup") return setup().finally(() => rl?.close());
   if (cmd === "start") return cmdStart();
   if (cmd === "stop") return cmdStop();
-  if (cmd === "restart") { await cmdStop(); return cmdStart(); }
+  if (cmd === "restart") { await cmdStop({ keepServer: true }); return cmdStart(); }
   if (cmd === "status") return cmdStatus();
   if (cmd === "logs") return tailLog(Number(flags.n) || 40);
   console.error(`Unknown command: ${cmd}. See \`opencode-gateway help\`.`);

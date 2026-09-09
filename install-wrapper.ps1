@@ -22,15 +22,23 @@ function opencode {
 # <<< opencode-gateway wrapper <<<
 '@
 
-if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
-$profile = Get-Content -LiteralPath $PROFILE -Raw -ErrorAction SilentlyContinue
+$profilePath = $PROFILE
+if ([string]::IsNullOrEmpty($profilePath)) {
+  $dir = Join-Path ([Environment]::GetFolderPath("MyDocuments")) (
+    if ($PSVersionTable.PSEdition -eq "Core") { "PowerShell" } else { "WindowsPowerShell" }
+  )
+  if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $profilePath = Join-Path $dir "Microsoft.PowerShell_profile.ps1"
+}
+if (!(Test-Path $profilePath)) { New-Item -ItemType File -Path $profilePath -Force | Out-Null }
+$profile = Get-Content -LiteralPath $profilePath -Raw -ErrorAction SilentlyContinue
 if ($profile -and $profile.Contains($markerBegin)) {
   $pattern = "(?s)" + [regex]::Escape($markerBegin) + ".*?" + [regex]::Escape($markerEnd)
   $profile = [regex]::Replace($profile, $pattern, $snippet.Trim())
-  Set-Content -LiteralPath $PROFILE -Value $profile
-  Write-Output "Wrapper updated in $PROFILE"
+  Set-Content -LiteralPath $profilePath -Value $profile
+  Write-Output "Wrapper updated in $profilePath"
 } else {
-  Add-Content -LiteralPath $PROFILE -Value ("`r`n" + $snippet.Trim() + "`r`n")
-  Write-Output "Wrapper installed in $PROFILE"
+  Add-Content -LiteralPath $profilePath -Value ("`r`n" + $snippet.Trim() + "`r`n")
+  Write-Output "Wrapper installed in $profilePath"
 }
 Write-Output "Restart your terminal, then:  opencode setup"

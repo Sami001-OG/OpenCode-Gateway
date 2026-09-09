@@ -13,6 +13,17 @@
 
 const DEFAULT_EVENTS = ["session.idle", "session.error", "permission.asked"];
 
+function apiTarget() {
+  // Same TELEGRAM_API_ROOT convention as the gateway (generic reverse proxy
+  // support, no vendor mandated). Falls back to direct api.telegram.org.
+  try {
+    const u = new URL((process.env.TELEGRAM_API_ROOT || "https://api.telegram.org").trim().replace(/\/$/, ""));
+    return { protocol: u.protocol, hostname: u.hostname, port: u.port ? Number(u.port) : (u.protocol === "http:" ? 80 : 443), basePath: u.pathname.replace(/\/$/, "") };
+  } catch {
+    return { protocol: "https:", hostname: "api.telegram.org", port: 443, basePath: "" };
+  }
+}
+
 function lookupOverride(hostname, opts, cb) {
   // TELEGRAM_API_IP pins api.telegram.org to a reachable DC (restricted networks)
   if (typeof opts === "function") { cb = opts; opts = {}; }
@@ -26,21 +37,28 @@ function lookupOverride(hostname, opts, cb) {
 }
 
 function postBotApi(token, method, payload) {
-  // node:https with lookup override (works where fetch can't reach a blocked DC)
-  return import("node:https").then(({ request }) => new Promise((resolve) => {
-    const data = JSON.stringify(payload);
-    const req = request({
-      hostname: "api.telegram.org",
-      path: `/bot${token}/${method}`,
-      method: "POST",
-      headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) },
-      lookup: lookupOverride,
-      timeout: 15000,
-    }, (res) => { res.resume(); res.on("end", resolve); });
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => resolve());
-    req.end(data);
-  }));
+  // node:https/http with lookup override (works where fetch can't reach a blocked DC)
+  return import("node:https").then(async ({ request: httpsRequest }) => {
+    const t = apiTarget();
+    const request = t.protocol === "http:"
+      ? (await import("node:http")).request
+      : httpsRequest;
+    return new Promise((resolve) => {
+      const data = JSON.stringify(payload);
+      const req = request({
+        hostname: t.hostname,
+        port: t.port,
+        path: `${t.basePath}/bot${token}/${method}`,
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) },
+        lookup: t.hostname === "api.telegram.org" ? lookupOverride : undefined,
+        timeout: 15000,
+      }, (res) => { res.resume(); res.on("end", resolve); });
+      req.on("timeout", () => req.destroy());
+      req.on("error", () => resolve());
+      req.end(data);
+    });
+  });
 }
 
 async function sendTelegram(text) {

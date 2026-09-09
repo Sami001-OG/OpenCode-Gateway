@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Telegraf } from "telegraf";
 import { BUILTIN_TOOLS, OpencodeService, errorMessage } from "./opencode-service.js";
-import { createTelegramAgent, downloadTelegramFile, telegramApi } from "./net.js";
+import { createTelegramAgent, downloadTelegramFile, telegramApi, apiTarget } from "./net.js";
 
 const {
   TELEGRAM_BOT_TOKEN = "",
@@ -38,15 +38,30 @@ if (WORK_DIR && fs.existsSync(WORK_DIR)) {
   console.warn(`[bridge] WORK_DIR does not exist: ${WORK_DIR} — using ${process.cwd()}`);
 }
 
+const BOOT_T0 = Date.now();
+const bootSecs = () => `${Math.round((Date.now() - BOOT_T0) / 1000)}s`;
+let GATEWAY_VERSION = "?";
+try {
+  GATEWAY_VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "?";
+} catch {}
+console.log(`[bridge] opencode-telegram-gateway v${GATEWAY_VERSION} booting…`);
 const opencode = new OpencodeService({
   defaultModel: OPENCODE_MODEL,
   cliEnabled: CLI_ENABLED !== "false",
 });
+console.log(`[boot] starting opencode server…`);
 await opencode.init({ serverUrl: OPENCODE_SERVER_URL, hostname: OPENCODE_HOSTNAME, port: OPENCODE_PORT });
+console.log(`[boot] opencode server ready in ${bootSecs()}${OPENCODE_SERVER_URL ? " (attached to existing server)" : ""}`);
 if (OPENCODE_AGENT) console.log(`[bridge] default agent: ${OPENCODE_AGENT || "(none)"}`);
 
 const telegramAgent = await createTelegramAgent();
-const bot = new Telegraf(TELEGRAM_BOT_TOKEN, telegramAgent ? { telegram: { agent: telegramAgent } } : {});
+const apiT = apiTarget();
+const bot = new Telegraf(TELEGRAM_BOT_TOKEN, {
+  telegram: {
+    ...(apiT.isDefaultHost ? {} : { apiRoot: apiT.root }),
+    ...(telegramAgent ? { agent: telegramAgent } : {}),
+  },
+});
 const key = (ctx) => String(ctx.from.id);
 const arg = (ctx) => ctx.message.text.replace(/^\/\w+(@\w+)?\s*/, "").trim();
 
@@ -125,7 +140,28 @@ function chunk(text, size = 4000) {
 }
 
 async function replyLong(ctx, text) {
-  for (const part of chunk(text)) await ctx.reply(part);
+  for (const part of chunk(text)) await tgCall(() => ctx.reply(part));
+}
+
+// Telegram calls fail transiently on flaky routes (VPN flaps, throttled DCs).
+// Retry with backoff; some errors are permanent — fail fast on those.
+async function tgCall(fn, tries = 3) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      const m = String(e?.message ?? e);
+      if (/message is not modified|message to edit not found|message to delete not found|bot was blocked|chat not found|too many requests/i.test(m)) {
+        if (/too many requests/i.test(m)) await new Promise((r) => setTimeout(r, 5000));
+        else throw e;
+      } else {
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+      }
+    }
+  }
+  throw last;
 }
 
 function fmtJson(v, max = 3800) {
@@ -133,12 +169,15 @@ function fmtJson(v, max = 3800) {
   return s.length > max ? s.slice(0, max) + `\n…(truncated ${s.length - max} chars)` : s;
 }
 
+// Bot tokens leak into Bot API error URLs — scrub before any log output.
+const scrub = (s) => String(s ?? "").replace(/\/bot\d+:[\w-]+/g, "/bot<redacted>");
+
 async function runAndReply(ctx, label, fn) {
   let working = null;
   const keepers = [];
   try {
-    await ctx.sendChatAction("typing");
-    working = await ctx.reply(`${label}… (/abort to stop)`);
+    await tgCall(() => ctx.sendChatAction("typing")).catch(() => {});
+    working = await tgCall(() => ctx.reply(`${label}… (/abort to stop)`));
     keepers.push(setInterval(() => ctx.sendChatAction("typing").catch(() => {}), 4500));
     // Live activity: rewrite the temp message as the harness switches tools
     // (thinking -> grep -> edit -> ...). Throttled to respect Telegram limits.
@@ -148,17 +187,17 @@ async function runAndReply(ctx, label, fn) {
         const a = opencode.getActivity(key(ctx));
         if (a && a !== lastShown && working) {
           lastShown = a;
-          await ctx.telegram.editMessageText(ctx.chat.id, working.message_id, undefined, `${a}\n\n(/abort to stop)`).catch(() => {});
+          await tgCall(() => ctx.telegram.editMessageText(ctx.chat.id, working.message_id, undefined, `${a}\n\n(/abort to stop)`), 2).catch(() => {});
         }
       } catch {}
     }, 2500));
     const out = await fn();
-    await ctx.deleteMessage(working.message_id).catch(() => {});
+    await tgCall(() => ctx.deleteMessage(working.message_id)).catch(() => {});
     working = null;
     await replyLong(ctx, out);
   } catch (e) {
-    try { if (working) await ctx.deleteMessage(working.message_id).catch(() => {}); } catch {}
-    await ctx.reply(`Error: ${e.message}`.slice(0, 4000));
+    try { if (working) await tgCall(() => ctx.deleteMessage(working.message_id)).catch(() => {}); } catch {}
+    await tgCall(() => ctx.reply(`Error: ${e.message}`.slice(0, 4000))).catch(() => {});
   } finally {
     for (const t of keepers) clearInterval(t);
     try { opencode.clearActivity(key(ctx)); } catch {}
@@ -449,12 +488,27 @@ const UPLOADS = path.join(process.cwd(), ".telegram-uploads");
 try { fs.mkdirSync(UPLOADS, { recursive: true }); } catch {}
 
 async function receiveFile(fileId, fallbackName, caption) {
-  const info = await telegramApi("getFile", { file_id: fileId });
+  let info;
+  try {
+    info = await telegramApi("getFile", { file_id: fileId });
+  } catch (e) {
+    throw new Error(`download failed at getFile (Telegram route flaky?): ${scrub(e.message)}`);
+  }
   const fpath = info?.result?.file_path;
-  if (!fpath) throw new Error("Telegram did not return a file path.");
+  if (!fpath) throw new Error(`download failed: Telegram returned no file path (${JSON.stringify(info).slice(0, 150)})`);
   const safe = `${Date.now()}_${String(fileId).slice(-8)}_${path.basename(fallbackName).replace(/[^\w.\-]+/g, "_")}`;
   const dest = path.join(UPLOADS, safe);
-  await downloadTelegramFile(fpath, dest);
+  try {
+    await downloadTelegramFile(fpath, dest);
+  } catch (e) {
+    throw new Error(`download failed mid-transfer (route flaky?): ${scrub(e.message)}`);
+  }
+  let size = 0;
+  try { size = fs.statSync(dest).size; } catch {}
+  if (!size) {
+    try { fs.rmSync(dest, { force: true }); } catch {}
+    throw new Error("download failed: received empty file — resend it");
+  }
   const text = caption?.trim()
     ? `${caption}\n\n[attached file saved at: ${dest}]`
     : `Work with the attached file saved at: ${dest}`;
@@ -508,10 +562,10 @@ opencode.onEvent(async (event) => {
     if (type === "permission.asked" || type === "permission_asked") {
       const pid = props.permissionID ?? props.id ?? "?";
       const text = `Permission needed (${String(props.sessionID ?? "").slice(0, 12)}…): ${props.tool ?? ""} ${errorMessage(props.request ?? "")}\n/allow ${pid} or /deny ${pid}`;
-      for (const id of ownerIds) await bot.telegram.sendMessage(id, text).catch(() => {});
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});
     } else if (type === "session.error") {
       const text = `OpenCode error (${String(props.sessionID ?? "").slice(0, 16)}…): ${errorMessage(props.error)}`;
-      for (const id of ownerIds) await bot.telegram.sendMessage(id, text).catch(() => {});
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});
     }
   } catch {}
 });
@@ -522,21 +576,39 @@ try {
   opencode.subscribeEvents(ctl.signal).catch(() => {});
 } catch {}
 
-bot.catch((err) => console.error("[telegram]", err?.message ?? err));
+bot.catch((err) => console.error("[telegram]", scrub(err?.message ?? err)));
 process.once("SIGINT", () => { bot.stop("SIGINT"); opencode.close().finally(() => process.exit(0)); });
 process.once("SIGTERM", () => { bot.stop("SIGTERM"); opencode.close().finally(() => process.exit(0)); });
 
 // Retry launch forever: a VPN flap / blocked route at boot must not kill the bot.
+// Every few attempts the route is re-resolved (direct -> pinned DC -> proxy),
+// so a dead pinned IP heals itself without a restart.
 async function launchWithRetry() {
+  let resolveTelegramRoute = null;
+  try {
+    ({ resolveTelegramRoute } = await import("./net.js"));
+  } catch {}
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.launch();
-      console.log("[telegram] gateway online. Send /start in Telegram.");
+      console.log(`[telegram] gateway online in ${bootSecs()}. Send /start in Telegram.`);
       return;
     } catch (e) {
       const wait = Math.min(15000 * attempt, 120000);
-      console.error(`[telegram] launch failed (attempt ${attempt}): ${e?.message ?? e}. Retrying in ${wait / 1000}s…`);
+      console.error(`[telegram] launch failed (attempt ${attempt}): ${scrub(e?.message ?? e)}. Retrying in ${wait / 1000}s…`);
       await new Promise((r) => setTimeout(r, wait));
+      if (resolveTelegramRoute && attempt % 3 === 0) {
+        try {
+          const v = await resolveTelegramRoute(TELEGRAM_BOT_TOKEN);
+          if (v.bot) {
+            if (v.pin) process.env.TELEGRAM_API_IP = v.pin;
+            else delete process.env.TELEGRAM_API_IP;
+            console.log(`[telegram] route re-resolved: ${v.mode}${v.pin ? ` (${v.pin})` : ""}`);
+          } else {
+            console.log(`[telegram] still unreachable: ${v.diagnosis.join(" | ").slice(0, 300)}`);
+          }
+        } catch {}
+      }
     }
   }
 }

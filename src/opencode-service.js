@@ -188,6 +188,75 @@ export class OpencodeService {
   setAgent(userKey, a) { this.getState(userKey).agent = a; }
 
   // ---------- core prompt (uses ALL tools automatically) ----------
+  // Heavy-task safe: fires promptAsync (returns immediately) then polls
+  // session.status until idle and reads the answer. No single HTTP request
+  // outlives a few seconds, so long runs can't die with "fetch failed".
+  // Every poll retries — a loaded server may drop individual requests.
+  async sendAndWait(userKey, sessionID, body, { pollMs = 3000, timeoutMs = 45 * 60 * 1000 } = {}) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let beforeIds = new Set();
+    try {
+      const msgs = unwrap(await this.client.session.messages({ path: { id: sessionID }, query: { limit: 3 } }));
+      for (const m of (Array.isArray(msgs) ? msgs : [])) if (m?.info?.id) beforeIds.add(m.info.id);
+    } catch {}
+    // fire (a failed POST means nothing started server-side, so retrying is safe)
+    let sent = false, lastErr = null;
+    for (let i = 0; i < 4 && !sent; i++) {
+      try {
+        unwrap(await this.client.session.promptAsync({ path: { id: sessionID }, body }));
+        sent = true;
+      } catch (e) { lastErr = e; await sleep(2000 * (i + 1)); }
+    }
+    if (!sent) throw new Error(`could not reach OpenCode server: ${lastErr?.message ?? lastErr}`);
+    const readMessages = async () => {
+      try {
+        const msgs = unwrap(await this.client.session.messages({ path: { id: sessionID }, query: { limit: 8 } }));
+        return Array.isArray(msgs) ? msgs : [];
+      } catch { return null; } // transient — caller retries
+    };
+    // poll until idle AND our answer is visible (guards the start-up race)
+    const end = Date.now() + timeoutMs;
+    let sawBusy = false, statusErrs = 0;
+    while (Date.now() < end) {
+      await sleep(pollMs);
+      let st = null, statusOk = true;
+      try {
+        const all = unwrap(await this.client.session.status());
+        st = all?.[sessionID] ?? null;
+      } catch { statusOk = false; }
+      if (!statusOk) {
+        if (++statusErrs > 20) throw new Error("lost contact with OpenCode server mid-task — it may still be working; check /messages");
+        continue;
+      }
+      statusErrs = 0;
+      if (st && st.type !== "idle") {
+        sawBusy = true;
+        this.setActivity(userKey, st.type === "retry" ? "🔁 retrying…" : THINKING);
+        continue;
+      }
+      const list = await readMessages();
+      if (!list) continue;
+      const fresh = list.filter((m) => m?.info?.role === "assistant" && !beforeIds.has(m.info.id));
+      if (fresh.length) return this.renderAnswer(fresh[fresh.length - 1]);
+      if (sawBusy) {
+        const lastAssistant = [...list].reverse().find((m) => m?.info?.role === "assistant");
+        if (lastAssistant) return this.renderAnswer(lastAssistant);
+        throw new Error("OpenCode finished but left no answer — check /messages");
+      }
+      // idle but our run hasn't appeared yet (start-up race) — keep waiting
+    }
+    throw new Error("timed out waiting for OpenCode (45m) — check /messages for partial output");
+  }
+
+  renderAnswer(msg) {
+    if (msg?.info?.error) throw new Error(errorMessage(msg.info.error));
+    const text = extractText({ data: msg });
+    if (!text || text === "(empty response from OpenCode)") {
+      throw new Error("OpenCode returned an empty answer — check /messages");
+    }
+    return text;
+  }
+
   async prompt(userKey, text, { noReply = false } = {}) {
     if (this.busy.has(userKey)) throw new Error("Still working on your last message — /abort to cancel.");
     const sessionID = await this.ensureSession(userKey);
@@ -200,12 +269,11 @@ export class OpencodeService {
       if (model) body.model = model;
       if (state.agent) body.agent = state.agent;
       if (noReply) body.noReply = true;
-      const result = await this.client.session.prompt({ path: { id: sessionID }, body });
-      if (noReply) return "(context saved, no reply requested)";
-      const data = unwrap(result);
-      // Surface model/auth failures as errors instead of "(empty response)"
-      if (data?.info?.error) throw new Error(errorMessage(data.info.error));
-      return extractText(result);
+      if (noReply) {
+        unwrap(await this.client.session.promptAsync({ path: { id: sessionID }, body }));
+        return "(context saved, no reply requested)";
+      }
+      return await this.sendAndWait(userKey, sessionID, body);
     } finally {
       this.busy.delete(userKey);
     }
@@ -250,10 +318,7 @@ export class OpencodeService {
       const body = { parts };
       if (model) body.model = model;
       if (state.agent) body.agent = state.agent;
-      const result = await this.client.session.prompt({ path: { id: sessionID }, body });
-      const data = unwrap(result);
-      if (data?.info?.error) throw new Error(errorMessage(data.info.error));
-      return extractText(result);
+      return await this.sendAndWait(userKey, sessionID, body);
     } finally {
       this.busy.delete(userKey);
     }
@@ -406,20 +471,29 @@ export class OpencodeService {
   }
 
   // ---------- realtime events (permissions, session idle, tool calls) ----------
+  // Self-healing: the SSE stream drops under heavy server load — reconnect
+  // forever with backoff instead of dying silently (which used to kill the
+  // activity feed and permission pushes mid-task).
   onEvent(fn) { this.eventHandlers.add(fn); return () => this.eventHandlers.delete(fn); }
   async subscribeEvents(signal) {
-    const stream = await this.client.event.subscribe();
     (async () => {
-      try {
-        for await (const event of stream.stream) {
-          for (const fn of this.eventHandlers) {
-            try { await fn(event); } catch {}
+      let attempt = 0;
+      while (!signal?.aborted) {
+        try {
+          const stream = await this.client.event.subscribe();
+          attempt = 0;
+          for await (const event of stream.stream) {
+            if (signal?.aborted) break;
+            for (const fn of this.eventHandlers) {
+              try { await fn(event); } catch {}
+            }
           }
-          if (signal?.aborted) break;
-        }
-      } catch {}
+        } catch {}
+        if (signal?.aborted) break;
+        attempt++;
+        await new Promise((r) => setTimeout(r, Math.min(5000 * attempt, 30000)));
+      }
     })();
-    return stream;
   }
 
   async close() { try { await this.server?.close?.(); } catch {} }

@@ -11,16 +11,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - `opencode-gateway` CLI: `setup` wizard (validates bot token, auto-detects your
-  Telegram ID via /start, auto-heals restricted networks via DC scan, writes .env,
+  Telegram ID via /start, auto-heals restricted networks, writes .env,
   publishes the Menu button, optional plugin install) + `start/stop/restart/status/logs`
   daemon control with pidfile. Non-interactive flags for CI/Docker.
+- `opencode setup` TUI wizard (`.opencode/commands/setup.md`) + shell wrappers
+  (`install-wrapper.ps1/.sh`) for the exact `opencode setup|gateway …` spelling.
+- Auto-route engine: direct → TLS-verified DC pin → proxy → precise diagnosis
+  (no accounts needed); `TELEGRAM_API_ROOT` generic relay hatch; launch retries
+  with periodic route re-resolution.
+- Heavy-task resilience: promptAsync + status polling (no long-lived HTTP),
+  per-poll retries, Telegram call retries with backoff, SSE auto-reconnect.
+- Sessions by name: numbered `/sessions` list, `/use` by number/name/id.
+- Live activity in temp messages (thinking → tool labels) from server events.
+- Photo/document receiving (download + vision-attach or path reference).
+- Attach-first restarts (reuse warm server, seconds not minutes), boot timings,
+  live progress in `start`, orphan-only port cleanup, PID-reuse guard.
+- Token scrubbing in all log output.
 - Canonical command menu (`src/commands.js`) shared by setup and docs.
-- Live activity in temp messages (thinking -> grep -> edit…) via server events.
-- Photo/document receiving (download + vision-attach or path-reference).
-- Launch retry loop: Telegram flaps no longer kill the bot.
-
-### Added
-- Restricted-network support for Telegram: `TELEGRAM_API_IP` DC pin + `HTTPS_PROXY`.
 
 ## [0.2.0] - 2026-09-07
 
