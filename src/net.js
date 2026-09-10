@@ -145,8 +145,10 @@ export async function checkBot(token, { timeoutMs = 12000 } = {}) {
 
 // TLS-scan candidate DC IPs; keep only genuine api.telegram.org frontends.
 // Never sends the token — aborts right after cert verification.
+// Strategy: quick pass over known-good IPs first, then (optionally) a wide
+// subnet sweep for networks that blacklist the well-known addresses.
 export async function scanDcPins(
-  candidates = ["149.154.167.220", "149.154.167.51", "149.154.166.120", "91.108.56.100", "149.154.175.100"],
+  candidates = ["149.154.167.32", "149.154.167.99", "149.154.167.132", "149.154.167.220", "149.154.175.50"],
   timeoutMs = 6000
 ) {
   const tls = await import("node:tls");
@@ -160,6 +162,32 @@ export async function scanDcPins(
     s.on("error", () => res(null));
   });
   return (await Promise.all(candidates.map(tryIp))).filter(Boolean);
+}
+
+// Deep sweep across all known Telegram edge subnets (used when the quick list
+// is all blocked — proves the network only blacklists famous IPs).
+export async function sweepDcPins(timeoutMs = 6000, concurrency = 120) {
+  const tls = await import("node:tls");
+  const subnets = [];
+  for (let i = 160; i <= 175; i++) subnets.push(`149.154.${i}`);
+  for (const third of [4, 8, 12, 16, 20, 32, 56, 60, 116, 120]) subnets.push(`91.108.${third}`);
+  const ips = [];
+  for (const s of subnets) for (let last = 1; last <= 254; last++) ips.push(`${s}.${last}`);
+  const tryIp = (ip) => new Promise((res) => {
+    const s = tls.connect({ host: ip, port: 443, servername: "api.telegram.org", timeout: timeoutMs }, () => {
+      const good = s.authorized && /telegram\.org/i.test(String(s.getPeerCertificate()?.subjectaltname || ""));
+      s.destroy();
+      if (good) res(ip); else res(null);
+    });
+    s.on("timeout", () => { s.destroy(); res(null); });
+    s.on("error", () => res(null));
+  });
+  const found = [];
+  for (let i = 0; i < ips.length; i += concurrency) {
+    const batch = await Promise.all(ips.slice(i, i + concurrency).map(tryIp));
+    for (const ip of batch) if (ip) found.push(ip);
+  }
+  return found;
 }
 
 function hintFor(err) {
@@ -210,7 +238,14 @@ export async function resolveTelegramRoute(token, { timeoutMs = 12000 } = {}) {
     else process.env.https_proxy = prevLowerProxy;
   }
   // 2. pinned DC (also without the proxy; the proxy is tested separately).
-  const pins = await scanDcPins();
+  //    Quick list first; if the network blacklists the famous IPs, sweep
+  //    every known edge subnet before giving up.
+  let pins = await scanDcPins();
+  if (pins.length === 0) {
+    diagnosis.push("quick pin list all blocked — sweeping all known edge subnets (~2 min)…");
+    pins = await sweepDcPins();
+    if (pins.length === 0) diagnosis.push("sweep: no genuine Telegram frontend reachable on any known subnet");
+  }
   delete process.env.HTTPS_PROXY;
   delete process.env.https_proxy;
   for (const pin of pins) {
@@ -241,4 +276,22 @@ export async function resolveTelegramRoute(token, { timeoutMs = 12000 } = {}) {
     }
   }
   return { mode: "failed", pin: "", bot: null, diagnosis };
+}
+
+// Fast path used by the bot at boot: trust a saved pin (validated in-process)
+// before any scanning — makes "start" instant when a working pin is already known.
+export async function resolveWithSavedPin(token, savedPin, { timeoutMs = 15000 } = {}) {
+  if (!savedPin) return null;
+  const prev = process.env.TELEGRAM_API_IP;
+  process.env.TELEGRAM_API_IP = savedPin;
+  try {
+    const r = await checkBot(token, { timeoutMs });
+    if (r?.ok) return { mode: "pinned", pin: savedPin, bot: r.result, diagnosis: [] };
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_API_IP;
+    else process.env.TELEGRAM_API_IP = prev;
+  }
 }

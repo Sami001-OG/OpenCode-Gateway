@@ -577,17 +577,26 @@ try {
 } catch {}
 
 bot.catch((err) => console.error("[telegram]", scrub(err?.message ?? err)));
+// Last-resort guards so a token URL can never hit disk raw again.
+process.on("unhandledRejection", (e) => console.error("[rejected]", scrub(e?.stack ?? String(e))));
+process.on("uncaughtException", (e) => { console.error("[fatal]", scrub(e?.stack ?? String(e))); process.exit(1); });
 process.once("SIGINT", () => { bot.stop("SIGINT"); opencode.close().finally(() => process.exit(0)); });
 process.once("SIGTERM", () => { bot.stop("SIGTERM"); opencode.close().finally(() => process.exit(0)); });
 
 // Retry launch forever: a VPN flap / blocked route at boot must not kill the bot.
-// Every few attempts the route is re-resolved (direct -> pinned DC -> proxy),
-// so a dead pinned IP heals itself without a restart.
+// Order: saved pin (instant) -> re-resolve (quick list -> full subnet sweep) on
+// every 3rd failure, so even fully-blacklisted networks heal without a restart.
 async function launchWithRetry() {
-  let resolveTelegramRoute = null;
+  let net = null;
   try {
-    ({ resolveTelegramRoute } = await import("./net.js"));
+    net = await import("./net.js");
   } catch {}
+  // Trust the saved pin first — one getMe, no scanning, instant start.
+  if (net?.resolveWithSavedPin && process.env.TELEGRAM_API_IP) {
+    const quick = await net.resolveWithSavedPin(TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_API_IP.trim());
+    if (quick) console.log(`[net] saved endpoint ${process.env.TELEGRAM_API_IP.trim()} verified — using it.`);
+    else console.log("[net] saved endpoint dead — re-scanning…");
+  }
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.launch();
@@ -597,9 +606,9 @@ async function launchWithRetry() {
       const wait = Math.min(15000 * attempt, 120000);
       console.error(`[telegram] launch failed (attempt ${attempt}): ${scrub(e?.message ?? e)}. Retrying in ${wait / 1000}s…`);
       await new Promise((r) => setTimeout(r, wait));
-      if (resolveTelegramRoute && attempt % 3 === 0) {
+      if (net && attempt % 3 === 0) {
         try {
-          const v = await resolveTelegramRoute(TELEGRAM_BOT_TOKEN);
+          const v = await net.resolveTelegramRoute(TELEGRAM_BOT_TOKEN);
           if (v.bot) {
             if (v.pin) process.env.TELEGRAM_API_IP = v.pin;
             else delete process.env.TELEGRAM_API_IP;
