@@ -69,10 +69,14 @@ npm install
 powershell -ExecutionPolicy Bypass -File .\install-wrapper.ps1  # one time: adds `opencode setup` + `opencode gateway ...`
 # restart your terminal, then:
 opencode setup     # wizard inside the opencode TUI: token, user ID(s), folder — then it auto-starts
+# ...or the plain terminal wizard (7 guided steps with a review screen):
+opencode gateway setup
 ```
 
 That's it. The wizard validates your bot, heals restricted networks automatically,
-writes `.env`, publishes the Menu ☰ button with all 46 commands, and starts the gateway.
+writes `.env`, publishes the Menu ☰ button with all 46 commands, and offers to start
+the gateway. `opencode gateway start` then opens a live dashboard (status, sessions,
+log tail — `q` detaches, `r` restarts, `s` stops, `l` shows more log).
 
 > On macOS/Linux use `sh install-wrapper.sh` instead. Without the wrapper (or for
 > global use): `node src/cli.js setup` / `node src/cli.js start`, or
@@ -181,8 +185,9 @@ Examples: `/cli models anthropic` · `/cli session list` · `/cli mcp list` · `
 
 | Command | What |
 |---|---|
-| `setup [--token X --user-id Y --work-dir Z --model P/M --port N --yes --skip-checks --no-menu]` | Interactive wizard (TTY) or fully scripted (flags) |
-| `start [--dir DIR]` | Background daemon; attaches to a warm server when one exists |
+| `setup [--token X --user-id Y --work-dir Z --model P/M --agent A --port N --yes --skip-checks --no-menu]` | Guided 7-step wizard (token → connection → users → folder → model → review → save) |
+| `start [--dir DIR] [--no-ui]` | Background daemon; attaches to a warm server when one exists, then opens the live dashboard UI |
+| `dashboard [--dir DIR]` | Reopen the live dashboard UI (status, sessions, log tail, `q`/`r`/`s`/`l` keys) |
 | `stop [--dir DIR]` | Stop gateway; frees the port only from orphaned servers, never yours |
 | `restart [--dir DIR]` | Fast restart (keeps warm server → seconds, not minutes) |
 | `status [--dir DIR]` | pid, port holder, config sanity |

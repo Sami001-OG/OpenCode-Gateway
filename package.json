@@ -23,7 +23,7 @@
     "start": "node src/index.js",
     "gateway": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --check src/index.js && node --check src/opencode-service.js && node --check src/plugin.js && node --check src/net.js && node --check src/cli.js && node --check src/commands.js && node --check plugin.js && echo OK"
+    "test": "node --check src/index.js && node --check src/opencode-service.js && node --check src/plugin.js && node --check src/net.js && node --check src/cli.js && node --check src/commands.js && node --check src/daemon.js && node --check src/setup.js && node --check src/dashboard.js && node --check plugin.js && echo OK"
   },
   "keywords": [
     "opencode",
