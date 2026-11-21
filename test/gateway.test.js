@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
-import { OpencodeService, quoteWindowsArg } from "../src/opencode-service.js";
+import { OpencodeService, quoteWindowsArg, parseModel } from "../src/opencode-service.js";
 import { COMMANDS } from "../src/commands.js";
 import { isTermux, authHeaders, normalizeMessage, createTransport } from "../src/transport.js";
 import { TelegramUI, normalizeProviders } from "../src/interactive.js";
@@ -186,6 +186,36 @@ test("transport auto-detects v1 vs v2 servers", async () => {
   } finally {
     v1.close(); v2.close();
   }
+});
+
+test("model strings support an optional variant", () => {
+  assert.deepEqual(parseModel("opencode/tidepool-alpha-free"), {
+    providerID: "opencode", modelID: "tidepool-alpha-free",
+  });
+  assert.deepEqual(parseModel("opencode/tidepool-alpha-free:high"), {
+    providerID: "opencode", modelID: "tidepool-alpha-free", variant: "high",
+  });
+});
+
+test("model button selection actually applies the model", async () => {
+  let chosen = "";
+  const svc = { setModel: (_k, id) => { chosen = id; }, getModel: () => chosen, getState: () => ({ sessionID: null }) };
+  const ui = new TelegramUI({ on() {} }, svc, () => "42");
+  ui.get("42").lists.models = [{ id: "p/m1", name: "M1", variants: [] }];
+  let shown = "";
+  await ui.select({ editMessageText: async (t) => { shown = t; } }, "model", 0);
+  assert.equal(chosen, "p/m1");
+  assert.match(shown, /p\/m1/);
+});
+
+test("variant selection appends :variant to the chosen model", async () => {
+  let chosen = "";
+  const svc = { setModel: (_k, id) => { chosen = id; }, getModel: () => chosen, getState: () => ({ sessionID: null }) };
+  const ui = new TelegramUI({ on() {} }, svc, () => "42");
+  const s = ui.get("42");
+  s.pendingModel = { id: "p/m1", variants: ["low", "high"] };
+  await ui.variant({ editMessageText: async () => {} }, 1);
+  assert.equal(chosen, "p/m1:high");
 });
 
 test("interactive keyboards keep callback_data within Telegram's 64-byte limit", async () => {

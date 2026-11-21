@@ -22,9 +22,11 @@ export function normalizeProviders(data) {
           id: typeof m === "string" ? m : (m.id ?? m.modelID),
           modelID: typeof m === "string" ? m : (m.modelID ?? m.id),
           name: typeof m === "string" ? m : (m.name ?? m.id ?? m.modelID),
+          variants: typeof m === "string" ? [] : (m.variants ?? []).map((x) => (typeof x === "string" ? x : x.id)).filter(Boolean),
         }))
       : Object.entries(p.models ?? {}).map(([k, v]) => ({
           id: v?.id ?? k, name: v?.name ?? k, modelID: v?.modelID ?? k,
+          variants: (v?.variants ?? []).map((x) => (typeof x === "string" ? x : x.id)).filter(Boolean),
         })),
   }));
 }
@@ -177,6 +179,7 @@ export class TelegramUI {
         (p.models ?? []).map((m) => ({
           id: `${p.id}/${m.id ?? m.modelID}`,
           name: `${p.id}/${m.name ?? m.id ?? m.modelID}`,
+          variants: m.variants ?? [],
         })));
     } catch {}
     try {
@@ -227,6 +230,7 @@ export class TelegramUI {
         if (kind === "run") return await this.run(ctx, rest[0]);
         if (kind === "hint") return await this.hint(ctx, rest[0], Number(rest[1]));
         if (kind === "sel") return await this.select(ctx, rest[0], Number(rest[1]));
+        if (kind === "var") return await this.variant(ctx, Number(rest[0]));
         if (kind === "prm") {
           const pid = this.permTokens.get(rest[0]);
           this.permTokens.delete(rest[0]);
@@ -243,10 +247,20 @@ export class TelegramUI {
   async select(ctx, kind, index) {
     const k = this.key(ctx);
     const s = this.get(k);
-    const list = s.lists[kind] ?? [];
+    // callback payloads use singular kinds; state stores plural lists
+    const plural = { model: "models", agent: "agents", session: "sessions", provider: "providers" }[kind] ?? kind;
+    const list = s.lists[plural] ?? [];
     const item = list[index];
     if (!item) return;
     if (kind === "model") {
+      s.pendingModel = item;
+      const variants = item.variants ?? [];
+      if (variants.length) {
+        const rows = variants.map((v, i) => [btn(v, `var:${i}`)]);
+        rows.push([btn("Default (no variant)", "var:-1")]);
+        rows.push([btn("« Models", "nav:models")]);
+        return ctx.editMessageText(`🧠 \`${item.id}\`\nPick a variant:`, kb(rows));
+      }
       this.opencode.setModel(k, item.id);
       s.model = item.id;
       await ctx.editMessageText(`✅ Model: \`${item.id}\``, kb([[btn("🧠 Models", "nav:models"), btn("« Main", "nav:main")]]));
@@ -264,6 +278,21 @@ export class TelegramUI {
       s.page = 0;
       await this.present(ctx, "models");
     }
+  }
+
+  async variant(ctx, index) {
+    const k = this.key(ctx);
+    const s = this.get(k);
+    const m = s.pendingModel;
+    if (!m) return;
+    const v = index < 0 ? "" : (m.variants ?? [])[index];
+    const id = v ? `${m.id}:${v}` : m.id;
+    this.opencode.setModel(k, id);
+    s.model = id;
+    s.pendingModel = null;
+    await ctx.editMessageText(`✅ Model: \`${id}\``, kb([
+      [btn("🧠 Models", "nav:models"), btn("« Main", "nav:main")],
+    ]));
   }
 
   async hint(ctx, kind, index) {

@@ -33,6 +33,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   runs it in addition to syntax checks.
 
 ### Added
+- **Model variants**: model buttons now offer the model's variants (e.g. reasoning
+  effort); selecting one sets `provider/model:variant`, also accepted by `/model`.
 - **Interactive Telegram UI** (`src/interactive.js`): `/menu` opens inline-keyboard
   menus for sessions, models (paginated), agents, providers, tools, slash commands
   and system actions. Model/agent/session selection applies immediately; permission

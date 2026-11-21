@@ -35,13 +35,22 @@ function unwrap(res) {
   return res;
 }
 
-function parseModel(modelStr) {
+export function parseModel(modelStr) {
   if (!modelStr) return undefined;
   const slash = modelStr.indexOf("/");
   if (slash <= 0) return undefined;
+  let modelID = modelStr.slice(slash + 1).trim();
+  let variant;
+  // Optional variant: provider/model:variant (e.g. high reasoning effort).
+  const colon = modelID.lastIndexOf(":");
+  if (colon > 0) {
+    variant = modelID.slice(colon + 1).trim();
+    modelID = modelID.slice(0, colon).trim();
+  }
   return {
     providerID: modelStr.slice(0, slash).trim(),
-    modelID: modelStr.slice(slash + 1).trim(),
+    modelID,
+    ...(variant ? { variant } : {}),
   };
 }
 
@@ -329,6 +338,7 @@ export class OpencodeService {
       const model = parseModel(state.model);
       const body = { parts: [{ type: "text", text }] };
       if (model) body.model = model;
+      if (model?.variant) body.variant = model.variant;
       if (state.agent) body.agent = state.agent;
       if (noReply) body.noReply = true;
       if (noReply) {
@@ -379,6 +389,7 @@ export class OpencodeService {
       ];
       const body = { parts };
       if (model) body.model = model;
+      if (model?.variant) body.variant = model.variant;
       if (state.agent) body.agent = state.agent;
       return await this.sendAndWait(userKey, sessionID, body);
     } finally {

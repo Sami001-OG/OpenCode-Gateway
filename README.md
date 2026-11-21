@@ -144,7 +144,7 @@ Send `/menu` (or `/start`) to open a button-driven UI — no typing needed:
 | Menu | What you can do |
 |---|---|
 | 💬 Sessions | Tap a session to switch instantly, or create a new one |
-| 🧠 Models | Paginated list of every model from every provider; tap to set it for your chat |
+| 🧠 Models | Paginated list of every model from every provider; tap one, then pick a variant (e.g. reasoning effort) — or "Default" |
 | 🤖 Agents | Tap an agent to switch (same as `/agent`) |
 | 🌐 Providers | Pick a provider, then pick one of its models |
 | 🔧 Tools | All 13 built-ins with usage hints |
@@ -205,7 +205,7 @@ All 13 built-ins work automatically in plain chat. These force a specific tool
 
 ### 🧠 Models, agents & system
 
-`/model provider/model` · `/model reset` · `/agent <name>` · `/agents` · `/models [provider]` ·
+`/model provider/model[:variant]` (e.g. `/model opencode/tidepool-alpha-free:high`) · `/model reset` · `/agent <name>` · `/agents` · `/models [provider]` ·
 `/providers` · `/commands` · `/mcp` · `/lspstatus` · `/tools` · `/config` · `/health` · `/status` · `/stats`
 
 ### 🛠️ Raw CLI — the "everything" button

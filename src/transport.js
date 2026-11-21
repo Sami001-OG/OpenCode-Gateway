@@ -149,7 +149,7 @@ function v2Overrides(baseUrl, headers) {
         // { text, files? } (the SDK type is stale).
         return raw(`/session/${encodeURIComponent(path.id)}/prompt`, {
           method: "POST",
-          body: { text, ...(files.length ? { files } : {}) },
+          body: { text, ...(files.length ? { files } : {}), ...(body?.variant ? { variant: body.variant } : {}) },
         });
       },
       messages: async ({ path, query }) => {
@@ -199,7 +199,12 @@ function v2Overrides(baseUrl, headers) {
             pr = { id: mo.providerID, name: mo.providerID, models: [] };
             providers.push(pr); byId.set(pr.id, pr);
           }
-          pr.models.push({ id: mo.id ?? mo.modelID, modelID: mo.modelID ?? mo.id, name: mo.name ?? mo.id });
+          pr.models.push({
+            id: mo.id ?? mo.modelID,
+            modelID: mo.modelID ?? mo.id,
+            name: mo.name ?? mo.id,
+            variants: (mo.variants ?? []).map((v) => (typeof v === "string" ? v : v.id)).filter(Boolean),
+          });
         }
         return { data: { providers } };
       },
