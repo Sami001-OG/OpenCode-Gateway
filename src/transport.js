@@ -187,7 +187,22 @@ function v2Overrides(baseUrl, headers) {
       symbols: async ({ query }) => raw(`/fs/find?query=${encodeURIComponent(query?.query ?? "")}`),
     },
     config: {
-      providers: async () => raw("/provider"),
+      // v2 splits providers and models into two endpoints — combine them into
+      // the v1 { providers: [{ id, name, models }] } shape.
+      providers: async () => {
+        const [p, m] = await Promise.all([raw("/provider"), raw("/model")]);
+        const providers = (p?.data ?? []).map((x) => ({ ...x, models: [] }));
+        const byId = new Map(providers.map((x) => [x.id, x]));
+        for (const mo of (m?.data ?? [])) {
+          let pr = byId.get(mo.providerID);
+          if (!pr) {
+            pr = { id: mo.providerID, name: mo.providerID, models: [] };
+            providers.push(pr); byId.set(pr.id, pr);
+          }
+          pr.models.push({ id: mo.id ?? mo.modelID, modelID: mo.modelID ?? mo.id, name: mo.name ?? mo.id });
+        }
+        return { data: { providers } };
+      },
       get: async () => raw("/config"),
     },
     app: { agents: async () => raw("/agent") },

@@ -137,6 +137,24 @@ daemon commands (`start/stop/restart`) are for host installs.
 - **Approve from the couch.** Permission prompts arrive as pushes; `/allow <id>` / `/deny <id>`.
 - **Change engine mid-chat.** `/model teamorouter/deepseek-v4-pro-free`, `/agent plan`.
 
+### 🎛️ Interactive menus (inline keyboards)
+
+Send `/menu` (or `/start`) to open a button-driven UI — no typing needed:
+
+| Menu | What you can do |
+|---|---|
+| 💬 Sessions | Tap a session to switch instantly, or create a new one |
+| 🧠 Models | Paginated list of every model from every provider; tap to set it for your chat |
+| 🤖 Agents | Tap an agent to switch (same as `/agent`) |
+| 🌐 Providers | Pick a provider, then pick one of its models |
+| 🔧 Tools | All 13 built-ins with usage hints |
+| 📋 Commands | OpenCode slash commands listed with descriptions |
+| ⚙️ System | Status, health, stats, config, MCP, LSP, unshare, abort — all as buttons |
+
+Permission requests now arrive as a Telegram message with **✅ Allow once / ❌ Deny**
+buttons, so you never have to type an ID. All callback buttons are gated by
+`ALLOWED_USER_IDS`, and callback payloads stay under Telegram's 64-byte limit.
+
 ---
 
 ## 🧰 Command map

@@ -7,6 +7,7 @@ import http from "node:http";
 import { OpencodeService, quoteWindowsArg } from "../src/opencode-service.js";
 import { COMMANDS } from "../src/commands.js";
 import { isTermux, authHeaders, normalizeMessage, createTransport } from "../src/transport.js";
+import { TelegramUI, normalizeProviders } from "../src/interactive.js";
 
 const user = "42";
 const sid = "ses_x";
@@ -163,6 +164,30 @@ test("transport auto-detects v1 vs v2 servers", async () => {
   } finally {
     v1.close(); v2.close();
   }
+});
+
+test("interactive keyboards keep callback_data within Telegram's 64-byte limit", async () => {
+  const stubBot = { on() {} };
+  const stubService = { getModel: () => "x", getState: () => ({ sessionID: null }) };
+  const ui = new TelegramUI(stubBot, stubService, () => "42");
+  ui.get("42").lists.models = Array.from({ length: 25 }, (_, i) => ({ id: `p/m${i}`, name: `Model ${i}` }));
+  for (const menu of ["main", "models", "agents", "sessions", "providers", "commands", "tools", "system"]) {
+    const view = await ui.view("42", menu);
+    for (const row of view.rows) {
+      for (const button of row) {
+        assert.ok(button.callback_data, `${menu}: missing callback_data`);
+        assert.ok(Buffer.byteLength(button.callback_data) <= 64, `${menu}: ${button.callback_data} too long`);
+      }
+    }
+  }
+});
+
+test("provider normalization understands v1 and v2 shapes", () => {
+  const v1 = normalizeProviders({ providers: [{ id: "anthropic", models: { claude: { name: "Claude" } } }] });
+  assert.equal(v1[0].id, "anthropic");
+  assert.equal(v1[0].models[0].name, "Claude");
+  const v2 = normalizeProviders({ data: [{ id: "opencode", models: [{ id: "m1", name: "M1" }] }] });
+  assert.equal(v2[0].models[0].id, "m1");
 });
 
 test("canonical Telegram menu stays in sync with registered handlers", () => {

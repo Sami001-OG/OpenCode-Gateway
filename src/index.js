@@ -5,9 +5,10 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { Telegraf } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 import { BUILTIN_TOOLS, OpencodeService, errorMessage } from "./opencode-service.js";
 import { createTelegramAgent, downloadTelegramFile, telegramApi, apiTarget } from "./net.js";
+import { TelegramUI } from "./interactive.js";
 
 const {
   TELEGRAM_BOT_TOKEN = "",
@@ -65,10 +66,15 @@ const bot = new Telegraf(TELEGRAM_BOT_TOKEN, {
 const key = (ctx) => String(ctx.from.id);
 const arg = (ctx) => ctx.message.text.replace(/^\/\w+(@\w+)?\s*/, "").trim();
 
+// Interactive inline-keyboard UI (models, agents, sessions, permissions, …).
+// Registered after the auth middleware below, so buttons are gated too.
+const ui = new TelegramUI(bot, opencode, key);
+
 const HELP = `OpenCode gateway — dir: ${process.cwd()}
 
 Just type normally: I run it in OpenCode with ALL tools (bash/edit/read/grep/glob/web/skill/todo/lsp/MCP...).
 Send photos or documents too — I download and attach them (tap Menu ☰ for every command).
+/menu — interactive button menus for models, agents, sessions, tools, providers and system.
 
 SESSIONS
 /new [title] — fresh session
@@ -216,9 +222,13 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-bot.start((ctx) => ctx.reply(`Welcome to your OpenCode gateway.\n\n${HELP}`));
-bot.help((ctx) => ctx.reply(HELP));
-bot.command("tools", (ctx) => ctx.reply(`Built-in tools (all usable via plain chat too):\n${BUILTIN_TOOLS.join(", ")}\n\nPlus your custom tools + MCP servers. /mcp to see MCP, /commands for slash commands.`));
+ui.register(); // callback buttons — after auth so unauthorized users can't press them
+
+bot.start((ctx) => ui.main(ctx));
+bot.command("menu", (ctx) => ui.main(ctx));
+bot.help((ctx) => ctx.reply(HELP, Markup.inlineKeyboard([
+  [Markup.button.callback("📱 Open interactive menu", "nav:main")],
+])));
 
 // ----- sessions -----
 bot.command("new", async (ctx) => {
@@ -236,14 +246,9 @@ function formatSessionList(list) {
     .join("\n");
 }
 bot.command("sessions", async (ctx) => {
-  await runAndReply(ctx, "Listing sessions", async () => {
-    const list = await opencode.listSessions(10);
-    if (!list.length) return "No sessions yet.";
-    lastLists.set(key(ctx), list.map((s) => ({ id: s.id, title: s.title || "(untitled)" })));
-    const cur = opencode.getState(key(ctx)).sessionID;
-    const marked = list.map((s) => (s.id === cur ? { ...s, title: `▶ ${s.title || "(untitled)"}` } : s));
-    return `Your sessions — switch with /use <number or name>:\n${formatSessionList(marked)}`;
-  });
+  await ui.show(ctx, "sessions");
+  const list = ui.get(key(ctx)).lists.sessions ?? [];
+  lastLists.set(key(ctx), list.map((s) => ({ id: s.id, title: s.title || "(untitled)" })));
 });
 bot.command("use", async (ctx) => {
   const q = arg(ctx).trim();
@@ -406,32 +411,11 @@ bot.command("agent", (ctx) => {
     ctx.reply(`Agent set to ${a} for your chat.`);
   }
 });
-bot.command("models", async (ctx) => {
-  await runAndReply(ctx, "Models", async () => {
-    const a = arg(ctx);
-    if (a && !a.includes(" ")) return opencode.runCli(["models", a]);
-    const data = await opencode.listModels();
-    const names = (data?.providers ?? []).slice(0, 30).map((p) => `• ${p.id}`).join("\n");
-    return `Providers:\n${names || "(none)"}\n\nDefaults: ${fmtJson(data?.default ?? {}, 500)}\n\nFull list: /cli models <provider>`;
-  });
-});
-bot.command("providers", async (ctx) => {
-  await runAndReply(ctx, "Providers", async () => fmtJson(await opencode.listModels(), 3800));
-});
-bot.command("agents", async (ctx) => {
-  await runAndReply(ctx, "Agents", async () => {
-    const list = await opencode.listAgents();
-    const arr = Array.isArray(list) ? list : [];
-    return arr.map((a) => `• ${a.name} — ${(a.description || "").slice(0, 120)}`).join("\n") || "(no agents)";
-  });
-});
-bot.command("commands", async (ctx) => {
-  await runAndReply(ctx, "Commands", async () => {
-    const list = await opencode.listCommands();
-    const arr = Array.isArray(list) ? list : [];
-    return arr.map((c) => `• /${c.name} — ${(c.description || "").slice(0, 100)}`).join("\n").slice(0, 3800) || "(no commands)";
-  });
-});
+bot.command("models", (ctx) => ui.show(ctx, "models"));
+bot.command("providers", (ctx) => ui.show(ctx, "providers"));
+bot.command("agents", (ctx) => ui.show(ctx, "agents"));
+bot.command("commands", (ctx) => ui.show(ctx, "commands"));
+bot.command("tools", (ctx) => ui.show(ctx, "tools"));
 bot.command("mcp", async (ctx) => {
   await runAndReply(ctx, "MCP", async () => fmtJson(await opencode.mcpStatus()));
 });
@@ -561,7 +545,8 @@ opencode.onEvent(async (event) => {
     if (type === "permission.asked" || type === "permission_asked") {
       const pid = props.permissionID ?? props.id ?? "?";
       const text = `Permission needed (${String(props.sessionID ?? "").slice(0, 12)}…): ${props.tool ?? ""} ${errorMessage(props.request ?? "")}\n/allow ${pid} or /deny ${pid}`;
-      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});
+      const keyboard = ui.permissionKeyboard(pid);
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text, keyboard)).catch(() => {});
     } else if (type === "session.error") {
       const text = `OpenCode error (${String(props.sessionID ?? "").slice(0, 16)}…): ${errorMessage(props.error)}`;
       for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});

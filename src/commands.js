@@ -1,8 +1,9 @@
 // Canonical Telegram command menu — shared by setup (setMyCommands) and docs.
 // Descriptions must stay <= 100 chars (Bot API limit).
 export const COMMANDS = [
-  ["start", "Welcome + full command list"],
+  ["start", "Welcome + interactive menu"],
   ["help", "Full command list"],
+  ["menu", "Open interactive button menu"],
   ["status", "Session, model, dir"],
   ["new", "Fresh session (resets context)"],
   ["sessions", "Sessions by name"],

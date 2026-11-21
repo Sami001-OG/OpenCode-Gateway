@@ -33,6 +33,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   runs it in addition to syntax checks.
 
 ### Added
+- **Interactive Telegram UI** (`src/interactive.js`): `/menu` opens inline-keyboard
+  menus for sessions, models (paginated), agents, providers, tools, slash commands
+  and system actions. Model/agent/session selection applies immediately; permission
+  pushes include Allow/Deny buttons. Callback payloads use short indexes (64-byte
+  safe) and are gated by `ALLOWED_USER_IDS`.
 - **Termux/Android support**: daemon no longer relies on `/proc/<other-pid>`
   (Android hides it) — uses `ps`, with `ss`/`fuser` fallbacks for port lookup.
   Install wrapper prints Termux-specific guidance.
