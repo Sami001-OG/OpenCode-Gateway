@@ -33,6 +33,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   runs it in addition to syntax checks.
 
 ### Added
+- **Merged Telegram + OpenCode feature audit** (50 focused subagent reviews): wired
+  v2 session operations that exist on the real server (fork, compact/summarize,
+  revert, diff, shell, command), v2 permission replies, v2 model/agent switching,
+  live SSE event normalization, owner-bound expiring permission buttons with
+  "Always", per-menu pagination, and fail-closed `ALLOWED_USER_IDS`.
 - **Model variants**: model buttons now offer the model's variants (e.g. reasoning
   effort); selecting one sets `provider/model:variant`, also accepted by `/model`.
 - **Interactive Telegram UI** (`src/interactive.js`): `/menu` opens inline-keyboard
@@ -55,7 +60,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   response can no longer execute a task twice.
 - Windows `/cli`: every argument is quoted for cmd.exe and shell metacharacters,
   `%VAR%`/`!VAR!` expansion tokens and CR/LF/NUL are rejected.
-- `/unshare` added to the canonical command menu and `/help` (47 commands).
+- `/unshare` added to the canonical command menu and `/help` (48 commands).
 - Docker image now installs the `opencode` CLI and builds from the lockfile; README
   no longer claims periodic route re-resolution (it happens on failed launches).
 

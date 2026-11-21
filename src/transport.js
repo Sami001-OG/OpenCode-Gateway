@@ -126,9 +126,6 @@ function wrap(real, overrides) {
 
 function v2Overrides(baseUrl, headers) {
   const raw = (p, o) => rawFetch(baseUrl, headers, p, o);
-  const unsupported = (name) => async () => {
-    throw new Error(`/${name} is not available on OpenCode v2 servers via this gateway`);
-  };
   return {
     path: {
       get: async () => ({ data: { cwd: process.cwd() } }),
@@ -142,6 +139,18 @@ function v2Overrides(baseUrl, headers) {
         return out;
       },
       promptAsync: async ({ path, body }) => {
+        const sid = encodeURIComponent(path.id);
+        // v2 ignores per-prompt model/agent — apply them to the session first.
+        if (body?.model) {
+          const m = body.model;
+          await raw(`/session/${sid}/model`, {
+            method: "POST",
+            body: { model: { id: m.modelID, providerID: m.providerID, ...(m.variant ? { variant: m.variant } : {}) } },
+          });
+        }
+        if (body?.agent) {
+          await raw(`/session/${sid}/agent`, { method: "POST", body: { agent: body.agent } });
+        }
         const text = (body?.parts ?? []).filter((p) => p?.type === "text").map((p) => p.text).join("\n");
         const files = (body?.parts ?? []).filter((p) => p?.type === "file")
           .map((f) => ({ uri: f.url, name: f.filename }));
@@ -165,16 +174,35 @@ function v2Overrides(baseUrl, headers) {
         }
       },
       abort: async ({ path }) => raw(`/session/${encodeURIComponent(path.id)}/interrupt`, { method: "POST" }),
-      share: unsupported("share"),
-      unshare: unsupported("unshare"),
-      fork: unsupported("fork"),
-      summarize: unsupported("summarize"),
-      revert: unsupported("revert"),
-      unrevert: unsupported("unrevert"),
-      diff: unsupported("diff"),
-      todo: unsupported("todo"),
-      shell: unsupported("shell"),
-      command: unsupported("command"),
+      // v2 exposes the same session operations under /api — wire them up
+      // instead of returning "not supported" (verified against v2.2.7).
+      // v2.2.7's real routes (confirmed from its openapi.json) differ from the
+      // bundled SDK's generated routes: summarize is /compact; share/unshare,
+      // unrevert and todo do not exist. Fail clearly instead of issuing a 404.
+      share: async () => { throw new Error("/share is not exposed by this OpenCode v2 server"); },
+      unshare: async () => { throw new Error("/unshare is not exposed by this OpenCode v2 server"); },
+      fork: async ({ path, body }) => raw(`/session/${encodeURIComponent(path.id)}/fork`, { method: "POST", body }),
+      summarize: async ({ path }) => raw(`/session/${encodeURIComponent(path.id)}/compact`, { method: "POST" }),
+      revert: async ({ path, body }) => raw(`/session/${encodeURIComponent(path.id)}/revert`, { method: "POST", body }),
+      unrevert: async () => { throw new Error("/unrevert is not exposed by this OpenCode v2 server"); },
+      diff: async ({ path }) => raw(`/session/${encodeURIComponent(path.id)}/diff`),
+      todo: async () => ({ data: [] }),
+      shell: async ({ path, body }) => {
+        const d = (await raw(`/session/${encodeURIComponent(path.id)}/shell`, { method: "POST", body }))?.data ?? {};
+        return { data: d.info ?? d };
+      },
+      command: async ({ path, body }) => raw(`/session/${encodeURIComponent(path.id)}/command`, {
+        method: "POST",
+        body: { command: body?.command, arguments: body?.arguments ?? "" },
+      }),
+      // v2 permission replies live on the session, not the old top-level route.
+      postSessionIdPermissionsPermissionId: async ({ path, body }) => {
+        const map = { allow: "once", once: "once", always: "always", deny: "reject", reject: "reject" };
+        return raw(`/session/${encodeURIComponent(path.id)}/permission/${encodeURIComponent(path.permissionID)}/reply`, {
+          method: "POST",
+          body: { reply: map[String(body?.response).toLowerCase()] ?? "once" },
+        });
+      },
     },
     file: {
       read: async ({ query }) => raw(`/fs/read?path=${encodeURIComponent(query?.path ?? "")}`),
@@ -213,13 +241,14 @@ function v2Overrides(baseUrl, headers) {
     app: { agents: async () => raw("/agent") },
     command: { list: async () => raw("/command") },
     mcp: { status: async () => raw("/mcp") },
-    lsp: { status: async () => ({ data: [] }) },
-    formatter: { status: async () => ({ data: [] }) },
+    lsp: { status: async () => raw("/lsp") },
+    formatter: { status: async () => raw("/formatter") },
     event: {
-      subscribe: async () => {
+      subscribe: async (options = {}) => {
         // Best-effort SSE bridge; v2 event payloads differ from v1, but the
-        // activity feed only looks at event.type / properties.
-        const res = await fetch(`${baseUrl}/event`, { headers, signal: AbortSignal.timeout(30000) });
+        // activity feed only looks at event.type / properties. Use the caller's
+        // signal — a hard 30s timeout used to kill a healthy long-lived stream.
+        const res = await fetch(`${baseUrl}/event`, { headers, signal: options.signal });
         const reader = res.body?.getReader?.();
         if (!reader) return { stream: (async function* () {})() };
         const decoder = new TextDecoder();

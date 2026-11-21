@@ -69,15 +69,16 @@ async function cmdStart() {
     }
   }
   const t0 = Date.now();
-  const logFd = fs.openSync(path.join(DIR, LOG_FILE), "a");
-  const errFd = fs.openSync(path.join(DIR, ERR_FILE), "a");
+  const logFd = fs.openSync(path.join(DIR, LOG_FILE), "a", 0o600);
+  const errFd = fs.openSync(path.join(DIR, ERR_FILE), "a", 0o600);
+  try { fs.chmodSync(path.join(DIR, LOG_FILE), 0o600); fs.chmodSync(path.join(DIR, ERR_FILE), 0o600); } catch {}
   const childEnv = { ...process.env };
   if (attachUrl && !childEnv.OPENCODE_SERVER_URL) childEnv.OPENCODE_SERVER_URL = attachUrl;
   const child = spawn(process.execPath, [GATEWAY_ENTRY], {
     cwd: DIR, detached: true, stdio: ["ignore", logFd, errFd], env: childEnv,
   });
   child.unref();
-  fs.writeFileSync(path.join(DIR, PID_FILE), JSON.stringify({ pid: child.pid, startedAt: Date.now(), attached: !!attachUrl }));
+  fs.writeFileSync(path.join(DIR, PID_FILE), JSON.stringify({ pid: child.pid, startedAt: Date.now(), attached: !!attachUrl }), { mode: 0o600 });
   console.log(`Starting gateway (pid ${child.pid})${attachUrl ? " [attached mode]" : ""}… logs: ${path.join(DIR, LOG_FILE)}`);
   // wait for online marker, showing live progress from the log
   const logPath = path.join(DIR, LOG_FILE);

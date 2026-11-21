@@ -34,6 +34,7 @@
     "bot"
   ],
   "license": "MIT",
+  "engines": { "node": ">=20" },
   "repository": {
     "type": "git",
     "url": "https://github.com/Sami001-OG/OpenCode-Gateway.git"

@@ -23,7 +23,7 @@ export const LOG_FILE = "gateway.log";
 export const ERR_FILE = "gateway.err.log";
 
 export const ENV_KEYS = [
-  "TELEGRAM_BOT_TOKEN", "ALLOWED_USER_IDS", "TELEGRAM_NOTIFY_CHAT_IDS",
+  "TELEGRAM_BOT_TOKEN", "ALLOWED_USER_IDS", "ALLOW_OPEN_BOT", "TELEGRAM_NOTIFY_CHAT_IDS",
   "WORK_DIR", "OPENCODE_SERVER_URL", "OPENCODE_SERVER_PASSWORD", "OPENCODE_HOSTNAME", "OPENCODE_PORT",
   "OPENCODE_MODEL", "OPENCODE_AGENT", "CLI_ENABLED", "TELEGRAM_API_IP", "HTTPS_PROXY",
   "TELEGRAM_API_ROOT",
@@ -50,7 +50,9 @@ export function writeEnv(dir, obj) {
   const lines = ["# Managed by `opencode-gateway setup` - secrets stay here, never commit."];
   for (const k of ENV_KEYS) if (obj[k] !== undefined && obj[k] !== "") lines.push(`${k}=${obj[k]}`);
   for (const k of Object.keys(obj)) if (!ENV_KEYS.includes(k) && obj[k] !== "") lines.push(`${k}=${obj[k]}`);
-  fs.writeFileSync(envFile(dir), lines.join("\n") + "\n");
+  const file = envFile(dir);
+  fs.writeFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch {} // upgrade existing files too
 }
 
 export function pidAlive(pid) {

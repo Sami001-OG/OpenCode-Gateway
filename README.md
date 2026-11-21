@@ -11,7 +11,7 @@ Heavy tasks survive flaky networks; restarts take seconds.
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/opencode-v1%20%2B%20v2-8A63D2)](https://opencode.ai)
-[![CI](https://img.shields.io/badge/ci-passing-brightgreen)](.github/workflows/ci.yml)
+[![CI](https://github.com/Sami001-OG/OpenCode-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Sami001-OG/OpenCode-Gateway/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Termux-lightgrey)](#)
 
 [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Termux](#-termux-android) · [Everyday use](#-everyday-use) · [Commands](#-command-map) · [Computer controls](#-computer-controls) · [Restricted networks](#-restricted-networks) · [Troubleshooting](#-troubleshooting) · [Security](#-security-read-this-first)
@@ -74,13 +74,13 @@ opencode gateway setup
 ```
 
 That's it. The wizard validates your bot, heals restricted networks automatically,
-writes `.env`, publishes the Menu ☰ button with all 47 commands, and offers to start
+writes `.env`, publishes the Menu ☰ button with all 48 commands, and offers to start
 the gateway. `opencode gateway start` then opens a live dashboard (status, sessions,
 log tail — `q` detaches, `r` restarts, `s` stops, `l` shows more log).
 
 > On macOS/Linux use `sh install-wrapper.sh` instead. Without the wrapper (or for
 > global use): `node src/cli.js setup` / `node src/cli.js start`, or
-> `npm i -g opencode-telegram-gateway` then `opencode-gateway setup|start|…`.
+> `node src/cli.js setup|start|…` (global npm publish is still on the roadmap).
 
 **3. Say hi.** In Telegram → `/start` → send `list files here` → send a photo and ask
 about it → send `create hello.py that prints hi and run it`.
@@ -105,10 +105,11 @@ opencode gateway start
 The gateway auto-detects **both OpenCode API generations**: v1 (`opencode <= 1.19.x`)
 and v2 (`opencode >= 2.x`, the kind Termux ships). For v2 it reads the password printed
 by `opencode serve`; if you attach to a v2 server you started yourself, also set
-`OPENCODE_SERVER_PASSWORD` in `.env`. Some convenience commands (`/share`, `/unshare`,
-`/fork`, `/summarize`, `/undo`, `/diff`, `/todo`, `/shell`) are not exposed by the v2 API
-and return a clear "not available" message; chatting, tools, sessions, models and
-permissions work.
+`OPENCODE_SERVER_PASSWORD` in `.env`. Models, agents and variants are applied to
+the v2 session before each prompt; `/fork`, `/summarize` (`/compact`), `/undo`,
+`/diff`, `/shell`, permissions and slash commands work on v2. A few routes the
+server genuinely does not expose (`/share`, `/unshare`, `/unrevert`, `/todo`) reply
+with a clear "not available" message.
 
 <details>
 <summary><b>🐳 Docker</b></summary>
@@ -182,9 +183,10 @@ buttons, so you never have to type an ID. All callback buttons are gated by
 All 13 built-ins work automatically in plain chat. These force a specific tool
 (read-only ones hit the API directly — fast, no LLM cost):
 
-> On OpenCode **v2** servers, `/share`, `/unshare`, `/fork`, `/summarize`, `/undo`,
-> `/diff`, `/todo` and `/shell` are not exposed by the v2 API and reply with a clear
-> "not available" message. Chatting, tools, sessions, models and permissions work on both.
+> On OpenCode **v2** servers, `/share`, `/unshare`, `/unrevert` and `/todo` are not
+> exposed by the installed server and reply with a clear "not available" message.
+> Everything else — chat, tools, sessions, models/variants, permissions and slash
+> commands — works on both.
 
 | Command | Tool | Notes |
 |---|---|---|
@@ -205,7 +207,7 @@ All 13 built-ins work automatically in plain chat. These force a specific tool
 
 ### 🧠 Models, agents & system
 
-`/model provider/model[:variant]` (e.g. `/model opencode/tidepool-alpha-free:high`) · `/model reset` · `/agent <name>` · `/agents` · `/models [provider]` ·
+`/model provider/model[#variant]` (e.g. `/model opencode/tidepool-alpha-free#high`) · `/model reset` · `/agent <name>` · `/agents` · `/models [provider]` ·
 `/providers` · `/commands` · `/mcp` · `/lspstatus` · `/tools` · `/config` · `/health` · `/status` · `/stats`
 
 ### 🛠️ Raw CLI — the "everything" button
@@ -251,7 +253,12 @@ Examples: `/cli models anthropic` · `/cli session list` · `/cli mcp list` · `
 The gateway polls; the **plugin** pushes. Install it so `session.idle`, `session.error`
 and `permission.asked` land in your Telegram inbox, and the agent gains a `telegram_send` tool.
 
-**Option A — npm (recommended):**
+> npm option is on the roadmap (package not published yet). Today, use Option B —
+> the one-file copy works with zero dependencies on both v1 and v2. The
+> `telegram_send` tool is only registered when `@opencode-ai/plugin` is available;
+> push notifications always work.
+
+**Option A — npm (planned):**
 
 ```jsonc
 // opencode.json
@@ -297,6 +304,7 @@ All set by the wizard into `.env` (never committed):
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | ✅ | @BotFather token |
 | `ALLOWED_USER_IDS` | ✅ | comma-separated Telegram IDs (`@userinfobot`) |
+| `ALLOW_OPEN_BOT` | – | `true` explicitly allows anyone (default: gateway refuses to start with an empty allowlist) |
 | `WORK_DIR` | ✅ | folder OpenCode works in |
 | `OPENCODE_SERVER_URL` | – | attach to existing `serve`/`web` instead of starting one |
 | `OPENCODE_SERVER_PASSWORD` | v2 attach | password printed by an OpenCode v2 `serve` you started yourself |

@@ -43,17 +43,27 @@ export class TelegramUI {
 
   get(k) {
     if (!this.state.has(k)) {
-      this.state.set(k, { menu: "main", page: 0, lists: {}, model: "", agent: "" });
+      this.state.set(k, { menu: "main", pages: {}, lists: {}, model: "", agent: "" });
     }
     return this.state.get(k);
   }
 
   // ---------- rendering ----------
+  async edit(ctx, text, markup) {
+    try {
+      if (ctx.callbackQuery) await ctx.editMessageText(text, markup);
+      else await ctx.reply(text, markup);
+    } catch (e) {
+      if (/not modified/i.test(String(e?.message))) return;
+      try { await ctx.reply(text, markup); } catch {}
+    }
+  }
+
   async present(ctx, menu, extra = {}) {
     const k = this.key(ctx);
     const s = this.get(k);
     s.menu = menu;
-    if (extra.page !== undefined) s.page = extra.page;
+    if (extra.page !== undefined) s.pages[menu] = extra.page;
     const view = await this.view(k, menu);
     const markup = kb(view.rows);
     const text = `${view.text}\n\n${s.menu !== "main" ? "⬇️ choose below · /menu for main menu" : "Tap a category:"}`;
@@ -87,8 +97,8 @@ export class TelegramUI {
         };
       case "models": {
         const all = s.lists.models ?? [];
-        const page = Math.min(s.page, Math.max(0, Math.ceil(all.length / PAGE) - 1));
-        s.page = page;
+        const page = Math.min(s.pages[menu] ?? 0, Math.max(0, Math.ceil(all.length / PAGE) - 1));
+        s.pages[menu] = page;
         const items = all.slice(page * PAGE, (page + 1) * PAGE);
         const rows = items.map((m, i) => [btn(short(m.name || m.id), `sel:model:${page * PAGE + i}`)]);
         rows.push(this.pager("models", page, all.length));
@@ -97,8 +107,8 @@ export class TelegramUI {
       }
       case "agents": {
         const all = s.lists.agents ?? [];
-        const page = Math.min(s.page, Math.max(0, Math.ceil(all.length / PAGE) - 1));
-        s.page = page;
+        const page = Math.min(s.pages[menu] ?? 0, Math.max(0, Math.ceil(all.length / PAGE) - 1));
+        s.pages[menu] = page;
         const items = all.slice(page * PAGE, (page + 1) * PAGE);
         const rows = items.map((a, i) => [btn(short(a.name), `sel:agent:${page * PAGE + i}`)]);
         if (!rows.length) rows.push([btn("(no agents configured)", "noop")]);
@@ -122,8 +132,8 @@ export class TelegramUI {
       }
       case "commands": {
         const all = s.lists.commands ?? [];
-        const page = Math.min(s.page, Math.max(0, Math.ceil(all.length / PAGE) - 1));
-        s.page = page;
+        const page = Math.min(s.pages[menu] ?? 0, Math.max(0, Math.ceil(all.length / PAGE) - 1));
+        s.pages[menu] = page;
         const items = all.slice(page * PAGE, (page + 1) * PAGE);
         const rows = items.map((c, i) => [btn(short("/" + (c.name ?? c)), `hint:command:${page * PAGE + i}`)]);
         if (!rows.length) rows.push([btn("(none reported)", "noop")]);
@@ -198,17 +208,25 @@ export class TelegramUI {
   async show(ctx, menu) {
     const k = this.key(ctx);
     await this.refreshLists(k);
-    this.get(k).page = 0;
+    this.get(k).pages[menu] = 0;
     await this.present(ctx, menu);
   }
 
-  permissionKeyboard(permissionID) {
+  permissionKeyboard(permissionID, ownerKeys = []) {
+    const now = Date.now();
+    for (const [t, e] of this.permTokens) {
+      if (!e || e.expires < now) this.permTokens.delete(t);
+    }
     const token = `p${++this.tokenSeq}`;
-    this.permTokens.set(token, permissionID);
-    return kb([[
-      btn("✅ Allow once", `prm:${token}:y`),
-      btn("❌ Deny", `prm:${token}:n`),
-    ]]);
+    this.permTokens.set(token, {
+      permissionID,
+      owners: new Set(ownerKeys.map(String)),
+      expires: now + 10 * 60 * 1000,
+    });
+    return kb([
+      [btn("✅ Allow once", `prm:${token}:y`), btn("♾ Always", `prm:${token}:a`)],
+      [btn("❌ Deny", `prm:${token}:n`)],
+    ]);
   }
 
   // ---------- callback router ----------
@@ -222,7 +240,7 @@ export class TelegramUI {
       try {
         if (kind === "nav") return await this.show(ctx, rest[0] || "main");
         if (kind === "page") {
-          s.page = Math.max(0, s.page + Number(rest[1]));
+          s.pages[rest[0]] = Math.max(0, (s.pages[rest[0]] ?? 0) + Number(rest[1]));
           return await this.present(ctx, rest[0]);
         }
         if (kind === "noop") return;
@@ -232,11 +250,16 @@ export class TelegramUI {
         if (kind === "sel") return await this.select(ctx, rest[0], Number(rest[1]));
         if (kind === "var") return await this.variant(ctx, Number(rest[0]));
         if (kind === "prm") {
-          const pid = this.permTokens.get(rest[0]);
-          this.permTokens.delete(rest[0]);
-          if (!pid) return;
-          await this.opencode.answerPermission(k, pid, rest[1] === "y" ? "allow" : "deny");
-          await ctx.editMessageText(rest[1] === "y" ? "✅ Permission allowed" : "❌ Permission denied");
+          const entry = this.permTokens.get(rest[0]);
+          if (!entry || entry.expires < Date.now() ||
+              (entry.owners.size && !entry.owners.has(k))) {
+            return ctx.answerCbQuery("Not authorized or expired", { show_alert: true });
+          }
+          this.permTokens.delete(rest[0]); // single-use
+          const response = rest[1] === "y" ? "allow" : rest[1] === "a" ? "always" : "deny";
+          await this.opencode.answerPermission(k, entry.permissionID, response);
+          const label = { allow: "✅ Allowed once", always: "♾ Always allowed", deny: "❌ Denied" }[response];
+          await this.edit(ctx, label);
         }
       } catch (e) {
         try { await ctx.reply(`Error: ${String(e.message).slice(0, 300)}`); } catch {}
@@ -273,9 +296,11 @@ export class TelegramUI {
       await ctx.editMessageText(`✅ Switched to "${item.title || item.id}"`, kb([[btn("💬 Sessions", "nav:sessions"), btn("« Main", "nav:main")]]));
     } else if (kind === "provider") {
       s.lists.models = (item.models ?? []).map((m) => ({
-        id: `${item.id}/${m.id ?? m.modelID}`, name: `${item.id}/${m.name ?? m.id ?? m.modelID}`,
+        id: `${item.id}/${m.id ?? m.modelID}`,
+        name: `${item.id}/${m.name ?? m.id ?? m.modelID}`,
+        variants: m.variants ?? [],
       }));
-      s.page = 0;
+      s.pages.models = 0;
       await this.present(ctx, "models");
     }
   }
@@ -286,7 +311,7 @@ export class TelegramUI {
     const m = s.pendingModel;
     if (!m) return;
     const v = index < 0 ? "" : (m.variants ?? [])[index];
-    const id = v ? `${m.id}:${v}` : m.id;
+    const id = v ? `${m.id}#${v}` : m.id;
     this.opencode.setModel(k, id);
     s.model = id;
     s.pendingModel = null;

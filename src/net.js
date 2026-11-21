@@ -264,6 +264,13 @@ export async function resolveTelegramRoute(token, { timeoutMs = 12000 } = {}) {
   }
   if (pins.length === 0) diagnosis.push("pin scan: no genuine Telegram frontend reachable");
 
+  // Restore the proxy env before step 3 — the pin loop above cleared it, and
+  // without this the "proxy" check silently re-tests the direct route.
+  if (prevProxy === undefined) delete process.env.HTTPS_PROXY;
+  else process.env.HTTPS_PROXY = prevProxy;
+  if (prevLowerProxy === undefined) delete process.env.https_proxy;
+  else process.env.https_proxy = prevLowerProxy;
+
   // 3. proxy env present — verify through it.
   if (prevProxy || prevLowerProxy) {
     try {
@@ -283,7 +290,12 @@ export async function resolveTelegramRoute(token, { timeoutMs = 12000 } = {}) {
 export async function resolveWithSavedPin(token, savedPin, { timeoutMs = 15000 } = {}) {
   if (!savedPin) return null;
   const prev = process.env.TELEGRAM_API_IP;
+  const prevProxy = process.env.HTTPS_PROXY, prevLower = process.env.https_proxy;
   process.env.TELEGRAM_API_IP = savedPin;
+  // buildAgent() prefers a proxy over the pin — clear it so this really tests
+  // the saved endpoint, then restore whatever was configured.
+  delete process.env.HTTPS_PROXY;
+  delete process.env.https_proxy;
   try {
     const r = await checkBot(token, { timeoutMs });
     if (r?.ok) return { mode: "pinned", pin: savedPin, bot: r.result, diagnosis: [] };
@@ -293,5 +305,9 @@ export async function resolveWithSavedPin(token, savedPin, { timeoutMs = 15000 }
   } finally {
     if (prev === undefined) delete process.env.TELEGRAM_API_IP;
     else process.env.TELEGRAM_API_IP = prev;
+    if (prevProxy === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = prevProxy;
+    if (prevLower === undefined) delete process.env.https_proxy;
+    else process.env.https_proxy = prevLower;
   }
 }

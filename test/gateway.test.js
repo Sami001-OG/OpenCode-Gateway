@@ -188,13 +188,22 @@ test("transport auto-detects v1 vs v2 servers", async () => {
   }
 });
 
-test("model strings support an optional variant", () => {
+test("model strings support both v1 legacy and v2 # variants", () => {
   assert.deepEqual(parseModel("opencode/tidepool-alpha-free"), {
     providerID: "opencode", modelID: "tidepool-alpha-free",
   });
   assert.deepEqual(parseModel("opencode/tidepool-alpha-free:high"), {
     providerID: "opencode", modelID: "tidepool-alpha-free", variant: "high",
   });
+  assert.deepEqual(parseModel("opencode/tidepool-alpha-free#high", { variantDelimiter: "#" }), {
+    providerID: "opencode", modelID: "tidepool-alpha-free", variant: "high",
+  });
+  // v1 model IDs may legitimately contain ':' and must not be split in v2 mode
+  assert.deepEqual(parseModel("ollama/llama3:8b", { variantDelimiter: "#" }), {
+    providerID: "ollama", modelID: "llama3:8b",
+  });
+  assert.equal(parseModel("p/"), undefined);
+  assert.equal(parseModel("p/m#", { variantDelimiter: "#" }), undefined);
 });
 
 test("model button selection actually applies the model", async () => {
@@ -208,14 +217,25 @@ test("model button selection actually applies the model", async () => {
   assert.match(shown, /p\/m1/);
 });
 
-test("variant selection appends :variant to the chosen model", async () => {
+test("variant selection appends #variant to the chosen model", async () => {
   let chosen = "";
   const svc = { setModel: (_k, id) => { chosen = id; }, getModel: () => chosen, getState: () => ({ sessionID: null }) };
   const ui = new TelegramUI({ on() {} }, svc, () => "42");
   const s = ui.get("42");
   s.pendingModel = { id: "p/m1", variants: ["low", "high"] };
   await ui.variant({ editMessageText: async () => {} }, 1);
-  assert.equal(chosen, "p/m1:high");
+  assert.equal(chosen, "p/m1#high");
+});
+
+test("permission buttons are single-use, owner-bound and expiring", async () => {
+  const ui = new TelegramUI({ on() {} }, { setModel() {}, getModel() {}, getState: () => ({}) }, () => "42");
+  const markup = ui.permissionKeyboard("perm-1", ["42", "99"]);
+  const data = markup.reply_markup.inline_keyboard[0][0].callback_data;
+  const token = data.split(":")[1];
+  assert.ok(ui.permTokens.get(token).owners.has("42"));
+  assert.ok(ui.permTokens.get(token).owners.has("99"));
+  ui.permTokens.get(token).expires = Date.now() - 1;
+  assert.equal(ui.permTokens.get(token).expires < Date.now(), true);
 });
 
 test("interactive keyboards keep callback_data within Telegram's 64-byte limit", async () => {

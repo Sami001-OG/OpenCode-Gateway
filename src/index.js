@@ -29,7 +29,13 @@ if (!TELEGRAM_BOT_TOKEN) {
 
 const allowed = new Set(ALLOWED_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean));
 if (allowed.size === 0) {
-  console.warn("[security] ALLOWED_USER_IDS is empty — ANY Telegram user who finds the bot can run code on your machine. Set it ASAP.");
+  // An open bot is remote code execution for anyone who finds it — require an
+  // explicit, written opt-in instead of failing open by default.
+  if (String(process.env.ALLOW_OPEN_BOT ?? "").toLowerCase() !== "true") {
+    console.error("[security] ALLOWED_USER_IDS is empty. Refusing to start: set numeric IDs, or set ALLOW_OPEN_BOT=true to knowingly allow anyone.");
+    process.exit(1);
+  }
+  console.warn("[security] ALLOW_OPEN_BOT=true — ANY Telegram user who finds this bot can run code on your machine.");
 }
 
 if (WORK_DIR && fs.existsSync(WORK_DIR)) {
@@ -160,9 +166,12 @@ async function tgCall(fn, tries = 3) {
     } catch (e) {
       last = e;
       const m = String(e?.message ?? e);
-      if (/message is not modified|message to edit not found|message to delete not found|bot was blocked|chat not found|too many requests/i.test(m)) {
-        if (/too many requests/i.test(m)) await new Promise((r) => setTimeout(r, 5000));
-        else throw e;
+      const code = e?.code ?? e?.response?.error_code ?? e?.response?.statusCode;
+      if (code === 401 || /bot was blocked|chat not found/i.test(m)) throw e; // permanent
+      if (/message is not modified|message to edit not found|message to delete not found/i.test(m)) throw e;
+      if (code === 429 || /too many requests/i.test(m)) {
+        const retryAfter = Number(e?.parameters?.retry_after ?? e?.response?.parameters?.retry_after ?? 5);
+        await new Promise((r) => setTimeout(r, Math.min(Math.max(retryAfter, 1), 30) * 1000));
       } else {
         await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
       }
@@ -253,7 +262,9 @@ bot.command("sessions", async (ctx) => {
 bot.command("use", async (ctx) => {
   const q = arg(ctx).trim();
   if (!q) return ctx.reply("Usage: /use <number, name, or id> (see /sessions)");
-  const list = lastLists.get(key(ctx)) ?? [];
+  // The button menu also populates the session list — fall back to it so
+  // tapping Sessions then typing /use 1 keeps working.
+  const list = lastLists.get(key(ctx)) ?? (ui.get(key(ctx)).lists.sessions ?? []).map((s) => ({ id: s.id, title: s.title || "(untitled)" }));
   let target = null;
   if (/^\d+$/.test(q)) {
     target = list[Number(q) - 1] ?? null;
@@ -536,17 +547,27 @@ bot.on("document", async (ctx) => {
 
 // ----- push opencode events (permissions, errors) to owner chats -----
 // NB: session.idle is deliberately NOT pushed — the reply itself confirms completion.
-const ownerIds = [...allowed];
+const ownerIds = [...new Set([
+  ...allowed,
+  ...(process.env.TELEGRAM_NOTIFY_CHAT_IDS || "").split(",").map((s) => s.trim()).filter(Boolean),
+])];
 opencode.onEvent(async (event) => {
   try {
     opencode.noteEventActivity(event); // live "currently doing X" for temp messages
     const type = event?.type ?? event?.event ?? "";
-    const props = event?.properties ?? {};
-    if (type === "permission.asked" || type === "permission_asked") {
-      const pid = props.permissionID ?? props.id ?? "?";
-      const text = `Permission needed (${String(props.sessionID ?? "").slice(0, 12)}…): ${props.tool ?? ""} ${errorMessage(props.request ?? "")}\n/allow ${pid} or /deny ${pid}`;
-      const keyboard = ui.permissionKeyboard(pid);
+    // v1 uses `properties`, v2 uses `data`; accept both.
+    const props = event?.properties ?? event?.data ?? event?.payload ?? {};
+    if (/permission\.(asked|updated|v2\.asked)|permission_asked/.test(type)) {
+      const pid = props.permissionID ?? props.requestID ?? props.id ?? "?";
+      const sessionID = props.sessionID ?? props.session?.id ?? "";
+      const tool = typeof props.tool === "string" ? props.tool : (props.permission ?? props.action ?? "");
+      const detail = errorMessage(props.request ?? props.message ?? "");
+      const text = `Permission needed (${String(sessionID).slice(0, 12)}…): ${tool} ${detail}\n/allow ${pid} or /deny ${pid}`;
+      const keyboard = ui.permissionKeyboard(pid, ownerIds);
       for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text, keyboard)).catch(() => {});
+    } else if (/question\.(asked|v2\.asked)/.test(type)) {
+      const text = `❓ OpenCode has a question:\n${errorMessage(props.question ?? props.text ?? props)}`;
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});
     } else if (type === "session.error") {
       const text = `OpenCode error (${String(props.sessionID ?? "").slice(0, 16)}…): ${errorMessage(props.error)}`;
       for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});

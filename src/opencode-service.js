@@ -35,23 +35,25 @@ function unwrap(res) {
   return res;
 }
 
-export function parseModel(modelStr) {
+export function parseModel(modelStr, { variantDelimiter = ":" } = {}) {
   if (!modelStr) return undefined;
   const slash = modelStr.indexOf("/");
   if (slash <= 0) return undefined;
+  const providerID = modelStr.slice(0, slash).trim();
+  if (!providerID) return undefined;
   let modelID = modelStr.slice(slash + 1).trim();
+  // v2 uses provider/model#variant; v1 has no variants, so ':' is only a
+  // legacy alias there (and may legitimately be part of a model ID like ollama/m:8b).
+  const hash = modelID.indexOf("#");
+  let idx = hash >= 0 ? hash : (variantDelimiter === ":" ? modelID.lastIndexOf(":") : -1);
   let variant;
-  // Optional variant: provider/model:variant (e.g. high reasoning effort).
-  const colon = modelID.lastIndexOf(":");
-  if (colon > 0) {
-    variant = modelID.slice(colon + 1).trim();
-    modelID = modelID.slice(0, colon).trim();
+  if (idx > 0) {
+    variant = modelID.slice(idx + 1).trim();
+    modelID = modelID.slice(0, idx).trim();
+    if (!variant || variant.includes("#")) return undefined;
   }
-  return {
-    providerID: modelStr.slice(0, slash).trim(),
-    modelID,
-    ...(variant ? { variant } : {}),
-  };
+  if (!modelID) return undefined;
+  return { providerID, modelID, ...(variant ? { variant } : {}) };
 }
 
 // cmd.exe: only double quotes neutralise & | > < ^ (and whitespace).
@@ -249,6 +251,7 @@ export class OpencodeService {
         );
       } catch { return false; }
     };
+    const promptAt = Date.now();
     let sent = false, lastErr = null;
     for (let i = 0; i < 4 && !sent; i++) {
       try {
@@ -308,7 +311,9 @@ export class OpencodeService {
           `${m?.info?.id}:${(m?.parts ?? []).map((p) => p?.text ?? "").join("")}`).join("|");
         quiet = signature === lastSignature ? quiet + 1 : 0;
         lastSignature = signature;
-        if (quiet >= 2) {
+        // v2 can hold an assistant record with no text for several seconds
+        // while reasoning streams; give it a real grace window before giving up.
+        if (quiet >= 4 && Date.now() - promptAt >= 5000) {
           return "(OpenCode finished but returned no text — check /messages for tool activity)";
         }
         continue;
@@ -335,7 +340,7 @@ export class OpencodeService {
     this.busy.add(userKey);
     this.setActivity(userKey, THINKING);
     try {
-      const model = parseModel(state.model);
+      const model = parseModel(state.model, { variantDelimiter: this.apiMode === "v2" ? "#" : ":" });
       const body = { parts: [{ type: "text", text }] };
       if (model) body.model = model;
       if (model?.variant) body.variant = model.variant;
@@ -382,7 +387,7 @@ export class OpencodeService {
     this.busy.add(userKey);
     this.setActivity(userKey, THINKING);
     try {
-      const model = parseModel(state.model);
+      const model = parseModel(state.model, { variantDelimiter: this.apiMode === "v2" ? "#" : ":" });
       const parts = [
         ...files.map((f) => ({ type: "file", mime: f.mime, url: f.url, filename: f.filename })),
         { type: "text", text },
@@ -555,7 +560,7 @@ export class OpencodeService {
       let attempt = 0;
       while (!signal?.aborted) {
         try {
-          const stream = await this.client.event.subscribe();
+          const stream = await this.client.event.subscribe({ signal });
           attempt = 0;
           for await (const event of stream.stream) {
             if (signal?.aborted) break;
