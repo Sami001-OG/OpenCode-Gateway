@@ -26,4 +26,9 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     echo "installed in $rc"
   fi
 done
+if [ -n "${TERMUX_VERSION:-}" ]; then
+  echo "Termux detected. Make sure OpenCode is installed:  pkg install opencode"
+  echo "Termux note: the gateway needs Node >= 20 (pkg install nodejs-lts) and"
+  echo "             ALLOWED_USER_IDS set before starting the bot."
+fi
 echo "Restart your terminal, then:  opencode setup"

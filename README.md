@@ -12,7 +12,7 @@ Heavy tasks survive flaky networks; restarts take seconds.
 [![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![OpenCode](https://img.shields.io/badge/opencode-1.18.x-8A63D2)](https://opencode.ai)
 [![CI](https://img.shields.io/badge/ci-passing-brightgreen)](.github/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Termux-lightgrey)](#)
 
 [How it works](#-how-it-works) · [Quick start](#-quick-start) · [Everyday use](#-everyday-use) · [Commands](#-command-map) · [Computer controls](#-computer-controls) · [Restricted networks](#-restricted-networks) · [Troubleshooting](#-troubleshooting) · [Security](#-security-read-this-first)
 
@@ -84,6 +84,30 @@ log tail — `q` detaches, `r` restarts, `s` stops, `l` shows more log).
 
 **3. Say hi.** In Telegram → `/start` → send `list files here` → send a photo and ask
 about it → send `create hello.py that prints hi and run it`.
+
+### 🤖 Termux (Android)
+
+Fully supported alongside Windows, macOS and Linux. Android hides other processes'
+`/proc` entries, so the daemon uses `ps` (and `ss`/`fuser` for ports) instead — no
+root required.
+
+```sh
+pkg update
+pkg install nodejs-lts git opencode
+git clone https://github.com/Sami001-OG/OpenCode-Gateway.git
+cd OpenCode-Gateway
+npm install
+sh install-wrapper.sh          # adds `opencode gateway …` to ~/.bashrc
+opencode gateway setup         # or: node src/cli.js setup
+opencode gateway start
+```
+
+The gateway auto-detects **both OpenCode API generations**: v1 (`opencode <= 1.19.x`)
+and v2 (`opencode >= 2.x`, the kind Termux ships). For v2 it reads the password printed
+by `opencode serve`; if you attach to a v2 server you started yourself, also set
+`OPENCODE_SERVER_PASSWORD` in `.env`. Some convenience commands (`/share`, `/fork`,
+`/summarize`, `/shell`, `/diff`) are not exposed by the v2 API and return a clear
+"not available" message; chatting, tools, sessions, models and permissions work.
 
 <details>
 <summary><b>🐳 Docker</b></summary>
@@ -252,6 +276,7 @@ All set by the wizard into `.env` (never committed):
 | `ALLOWED_USER_IDS` | ✅ | comma-separated Telegram IDs (`@userinfobot`) |
 | `WORK_DIR` | ✅ | folder OpenCode works in |
 | `OPENCODE_SERVER_URL` | – | attach to existing `serve`/`web` instead of starting one |
+| `OPENCODE_SERVER_PASSWORD` | v2 attach | password printed by an OpenCode v2 `serve` you started yourself |
 | `OPENCODE_HOSTNAME` / `OPENCODE_PORT` | – | defaults `127.0.0.1:4096` |
 | `OPENCODE_MODEL` / `OPENCODE_AGENT` | – | per-chat defaults (overridable via `/model`, `/agent`) |
 | `CLI_ENABLED` | – | `false` disables raw `/cli` passthrough |

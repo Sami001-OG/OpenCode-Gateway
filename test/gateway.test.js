@@ -3,8 +3,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import { OpencodeService, quoteWindowsArg } from "../src/opencode-service.js";
 import { COMMANDS } from "../src/commands.js";
+import { isTermux, authHeaders, normalizeMessage, createTransport } from "../src/transport.js";
 
 const user = "42";
 const sid = "ses_x";
@@ -100,6 +102,62 @@ test("quoteWindowsArg makes chat-supplied /cli args shell-safe", () => {
   assert.throws(() => quoteWindowsArg("x%PATH%"), /unsafe/);
   assert.throws(() => quoteWindowsArg("a\nb"), /unsafe/);
   assert.throws(() => quoteWindowsArg("a!b"), /unsafe/);
+});
+
+test("Termux detection works without breaking other platforms", () => {
+  const saved = { tv: process.env.TERMUX_VERSION, prefix: process.env.PREFIX };
+  try {
+    delete process.env.TERMUX_VERSION; delete process.env.PREFIX;
+    assert.equal(isTermux(), false);
+    process.env.TERMUX_VERSION = "googleplay.2026.10.09";
+    assert.equal(isTermux(), true);
+    delete process.env.TERMUX_VERSION;
+    process.env.PREFIX = "/data/data/com.termux/files/usr";
+    assert.equal(isTermux(), true);
+  } finally {
+    if (saved.tv === undefined) delete process.env.TERMUX_VERSION; else process.env.TERMUX_VERSION = saved.tv;
+    if (saved.prefix === undefined) delete process.env.PREFIX; else process.env.PREFIX = saved.prefix;
+  }
+});
+
+test("v2 transport sends Basic auth + directory header", () => {
+  const h = authHeaders("secret");
+  assert.equal(h.Authorization, "Basic " + Buffer.from("opencode:secret").toString("base64"));
+  assert.equal(h["x-opencode-directory"], encodeURIComponent(process.cwd()));
+  assert.equal(authHeaders("")["x-opencode-directory"], encodeURIComponent(process.cwd()));
+});
+
+test("v2 messages map into the v1 shape the gateway renders", () => {
+  const m = normalizeMessage({
+    id: "msg_1", type: "assistant",
+    content: [{ type: "text", text: "hello" }, { type: "tool", id: "t1" }],
+  });
+  assert.equal(m.info.id, "msg_1");
+  assert.equal(m.info.role, "assistant");
+  assert.equal(m.parts.length, 1);
+  assert.equal(m.parts[0].text, "hello");
+});
+
+test("transport auto-detects v1 vs v2 servers", async () => {
+  const listen = (status) => new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.url === "/api/session") {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end("[]");
+      } else { res.writeHead(404); res.end(); }
+    });
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+  const v1 = await listen(404);
+  const v2 = await listen(200);
+  try {
+    const t1 = await createTransport({ serverUrl: `http://127.0.0.1:${v1.address().port}` });
+    const t2 = await createTransport({ serverUrl: `http://127.0.0.1:${v2.address().port}` });
+    assert.equal(t1.mode, "v1");
+    assert.equal(t2.mode, "v2");
+  } finally {
+    v1.close(); v2.close();
+  }
 });
 
 test("canonical Telegram menu stays in sync with registered handlers", () => {

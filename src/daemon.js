@@ -5,7 +5,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
+import { isTermux } from "./transport.js";
+
+// Android hides /proc/<other-pid> even from Termux. `ps` is the portable
+// fallback there (and useful anywhere /proc is restricted).
+function psField(pid, format) {
+  try {
+    return execFileSync("ps", ["-p", String(pid), "-o", format], {
+      encoding: "utf8", timeout: 5000,
+    }).trim();
+  } catch { return ""; }
+}
 
 export const PID_FILE = ".gateway.pid";
 export const LOG_FILE = "gateway.log";
@@ -13,7 +24,7 @@ export const ERR_FILE = "gateway.err.log";
 
 export const ENV_KEYS = [
   "TELEGRAM_BOT_TOKEN", "ALLOWED_USER_IDS", "TELEGRAM_NOTIFY_CHAT_IDS",
-  "WORK_DIR", "OPENCODE_SERVER_URL", "OPENCODE_HOSTNAME", "OPENCODE_PORT",
+  "WORK_DIR", "OPENCODE_SERVER_URL", "OPENCODE_SERVER_PASSWORD", "OPENCODE_HOSTNAME", "OPENCODE_PORT",
   "OPENCODE_MODEL", "OPENCODE_AGENT", "CLI_ENABLED", "TELEGRAM_API_IP", "HTTPS_PROXY",
   "TELEGRAM_API_ROOT",
 ];
@@ -59,9 +70,13 @@ export function readPid(dir) {
           { encoding: "utf8", timeout: 15000 }
         );
       } else {
-        cmd = fs.readFileSync(`/proc/${p.pid}/cmdline`, "utf8").replace(/\0/g, " ");
+        try { cmd = fs.readFileSync(`/proc/${p.pid}/cmdline`, "utf8").replace(/\0/g, " "); } catch {}
+        if (!cmd) cmd = psField(p.pid, "args=");
       }
-      if (!/index\.js|opencode-gateway|src.cli/i.test(cmd)) return null;
+      if (cmd && !/index\.js|opencode-gateway|src.cli/i.test(cmd)) return null;
+      // Termux: no cmd available (Android blocks /proc) — a live pidfile is
+      // the best evidence we have, and killing the wrong pid is worse.
+      if (!cmd && !isTermux()) return null;
     } catch { return null; }
     return p.pid;
   } catch { return null; }
@@ -84,7 +99,22 @@ export function portOwner(port) {
       return out.length ? Number(out[0]) : null;
     }
     const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || true`, { encoding: "utf8", timeout: 15000 }).trim();
-    return out ? Number(out.split("\n")[0]) : null;
+    if (out) return Number(out.split("\n")[0]);
+    // lsof is not guaranteed on Termux/Android — fall back to ss / fuser.
+    try {
+      const ss = execFileSync("ss", ["-ltnp"], { encoding: "utf8", timeout: 5000 });
+      for (const line of ss.split(/\r?\n/)) {
+        if (!new RegExp(`:${port}\\b`).test(line)) continue;
+        const m = line.match(/pid=(\d+)/);
+        if (m) return Number(m[1]);
+      }
+    } catch {}
+    try {
+      const fuser = execFileSync("fuser", ["-n", "tcp", String(port)], { encoding: "utf8", timeout: 5000 }).trim();
+      const m = fuser.match(/\d+/);
+      if (m) return Number(m[0]);
+    } catch {}
+    return null;
   } catch { return null; }
 }
 
@@ -97,7 +127,8 @@ export function procName(pid) {
       ).trim();
       return n || null;
     }
-    return fs.readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+    try { return fs.readFileSync(`/proc/${pid}/comm`, "utf8").trim(); } catch {}
+    return psField(pid, "comm=") || null;
   } catch { return null; }
 }
 
@@ -110,51 +141,44 @@ export function procParent(pid) {
       ).trim();
       return n ? Number(n) : null;
     }
-    return null;
+    const ppid = psField(pid, "ppid=");
+    return ppid ? Number(ppid) : null;
   } catch { return null; }
 }
 
 // Is something on this port already an opencode server we can reuse?
 // (Warm restarts then skip the slow cold boot entirely.)
-export function probeOpencodeServer(hostname, port, timeoutMs = 5000) {
+function getJson(hostname, port, path, timeoutMs) {
   return new Promise((resolve) => {
-    const req = http.get(
-      { hostname, port, path: "/session", timeout: timeoutMs },
-      (res) => {
-        let body = "";
-        res.on("data", (d) => { body += d; });
-        res.on("end", () => {
-          try {
-            const j = JSON.parse(body);
-            resolve(res.statusCode === 200 && Array.isArray(j) ? true : false);
-          } catch { resolve(false); }
-        });
-      }
-    );
-    req.on("timeout", () => { req.destroy(); resolve(false); });
-    req.on("error", () => resolve(false));
+    const req = http.get({ hostname, port, path, timeout: timeoutMs }, (res) => {
+      let body = "";
+      res.on("data", (d) => { body += d; });
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, json: JSON.parse(body) }); }
+        catch { resolve({ status: res.statusCode, json: null }); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve(null));
   });
 }
 
+export async function probeOpencodeServer(hostname, port, timeoutMs = 5000) {
+  // v1 answers /session; v2 answers /api/session (both return an array).
+  for (const path of ["/session", "/api/session"]) {
+    const r = await getJson(hostname, port, path, timeoutMs);
+    if (r?.status === 200 && Array.isArray(r.json)) return true;
+  }
+  return false;
+}
+
 // How many sessions does the opencode server currently hold? Best-effort (-1 = unknown).
-export function sessionCount(hostname, port, timeoutMs = 4000) {
-  return new Promise((resolve) => {
-    const req = http.get(
-      { hostname, port, path: "/session", timeout: timeoutMs },
-      (res) => {
-        let body = "";
-        res.on("data", (d) => { body += d; });
-        res.on("end", () => {
-          try {
-            const j = JSON.parse(body);
-            resolve(res.statusCode === 200 && Array.isArray(j) ? j.length : -1);
-          } catch { resolve(-1); }
-        });
-      }
-    );
-    req.on("timeout", () => { req.destroy(); resolve(-1); });
-    req.on("error", () => resolve(-1));
-  });
+export async function sessionCount(hostname, port, timeoutMs = 4000) {
+  for (const path of ["/session", "/api/session"]) {
+    const r = await getJson(hostname, port, path, timeoutMs);
+    if (r?.status === 200 && Array.isArray(r.json)) return r.json.length;
+  }
+  return -1;
 }
 
 // Last n lines of a file ("" when missing).

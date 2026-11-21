@@ -12,7 +12,6 @@
 // behave identically to the CLI).
 
 import { spawn } from "node:child_process";
-import { createOpencode, createOpencodeClient } from "@opencode-ai/sdk";
 
 export const BUILTIN_TOOLS = [
   "bash", "edit", "write", "read", "grep", "glob", "lsp",
@@ -26,7 +25,12 @@ function unwrap(res) {
     if ("error" in res && res.error) {
       throw new Error(typeof res.error === "string" ? res.error : JSON.stringify(res.error));
     }
-    return res.data;
+    let data = res.data;
+    // v2 servers envelope their payload as { data }, and the v1 SDK wraps that
+    // again when pointed at /api. Unwrap only the redundant inner envelope.
+    if (data && typeof data === "object" && !Array.isArray(data) &&
+        Object.keys(data).length === 1 && "data" in data) data = data.data;
+    return data;
   }
   return res;
 }
@@ -121,17 +125,15 @@ export class OpencodeService {
   }
 
   async init({ serverUrl = "", hostname = "127.0.0.1", port = 4096, timeout = 60000 } = {}) {
-    if (serverUrl) {
-      this.client = createOpencodeClient({ baseUrl: serverUrl.replace(/\/$/, "") });
-      // ping (installed server v1.18.x has no /global/health — path.get proves we're live)
-      const pong = unwrap(await this.client.path.get());
-      console.log(`[opencode] attached to ${serverUrl} (cwd=${pong?.cwd ?? "?"})`);
-    } else {
-      const instance = await createOpencode({ hostname, port: Number(port), timeout });
-      this.server = instance;
-      this.client = instance.client;
-      console.log(`[opencode] server started at ${instance.server?.url ?? `http://${hostname}:${port}`}`);
-    }
+    const { createTransport } = await import("./transport.js");
+    const t = await createTransport({ serverUrl, hostname, port: Number(port), timeout });
+    this.transport = t;
+    this.client = t.client;
+    this.server = { close: t.close };
+    this.apiMode = t.mode;
+    // path.get proves we're live on both v1 and v2 (mapped in the v2 adapter).
+    const pong = unwrap(await this.client.path.get());
+    console.log(`[opencode] ${t.mode.toUpperCase()} server ${serverUrl ? "attached" : "started"} at ${t.url} (cwd=${pong?.cwd ?? "?"})`);
   }
 
   // ---------- session bookkeeping ----------

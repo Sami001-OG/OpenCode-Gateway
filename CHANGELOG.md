@@ -32,6 +32,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   prevention, Windows `/cli` quoting and menu/handler consistency. `npm test` now
   runs it in addition to syntax checks.
 
+### Added
+- **Termux/Android support**: daemon no longer relies on `/proc/<other-pid>`
+  (Android hides it) — uses `ps`, with `ss`/`fuser` fallbacks for port lookup.
+  Install wrapper prints Termux-specific guidance.
+- **Both OpenCode API generations supported**: v1 (`<= 1.19.x`) and v2 (`>= 2.x`,
+  `/api` + Basic auth). The gateway reads the v2 `server password` from the
+  startup log; `OPENCODE_SERVER_PASSWORD` covers manually attached v2 servers.
+
 ### Fixed
 - `/use` and `/fork` now keep the session→user map in sync, so live tool/activity
   labels keep working after switching sessions.
