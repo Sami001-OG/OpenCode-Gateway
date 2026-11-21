@@ -585,39 +585,41 @@ process.once("SIGTERM", () => { bot.stop("SIGTERM"); opencode.close().finally(()
 // Retry launch forever: a VPN flap / blocked route at boot must not kill the bot.
 // Order: saved pin (instant) -> re-resolve (quick list -> full subnet sweep) on
 // every 3rd failure, so even fully-blacklisted networks heal without a restart.
-async function launchWithRetry() {
+async function launchWithRetry(attempt = 1) {
   let net = null;
-  try {
-    net = await import("./net.js");
-  } catch {}
+  try { net = await import("./net.js"); } catch {}
   // Trust the saved pin first — one getMe, no scanning, instant start.
-  if (net?.resolveWithSavedPin && process.env.TELEGRAM_API_IP) {
+  if (attempt === 1 && net?.resolveWithSavedPin && process.env.TELEGRAM_API_IP) {
     const quick = await net.resolveWithSavedPin(TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_API_IP.trim());
     if (quick) console.log(`[net] saved endpoint ${process.env.TELEGRAM_API_IP.trim()} verified — using it.`);
     else console.log("[net] saved endpoint dead — re-scanning…");
   }
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await bot.launch();
-      console.log(`[telegram] gateway online in ${bootSecs()}. Send /start in Telegram.`);
-      return;
-    } catch (e) {
-      const wait = Math.min(15000 * attempt, 120000);
-      console.error(`[telegram] launch failed (attempt ${attempt}): ${scrub(e?.message ?? e)}. Retrying in ${wait / 1000}s…`);
-      await new Promise((r) => setTimeout(r, wait));
-      if (net && attempt % 3 === 0) {
-        try {
-          const v = await net.resolveTelegramRoute(TELEGRAM_BOT_TOKEN);
-          if (v.bot) {
-            if (v.pin) process.env.TELEGRAM_API_IP = v.pin;
-            else delete process.env.TELEGRAM_API_IP;
-            console.log(`[telegram] route re-resolved: ${v.mode}${v.pin ? ` (${v.pin})` : ""}`);
-          } else {
-            console.log(`[telegram] still unreachable: ${v.diagnosis.join(" | ").slice(0, 300)}`);
-          }
-        } catch {}
-      }
+
+  const onFailure = (e) => {
+    const wait = Math.min(15000 * attempt, 120000);
+    console.error(`[telegram] launch failed (attempt ${attempt}): ${scrub(e?.message ?? e)}. Retrying in ${wait / 1000}s…`);
+    if (net && attempt % 3 === 0) {
+      net.resolveTelegramRoute(TELEGRAM_BOT_TOKEN).then((v) => {
+        if (v.bot) {
+          if (v.pin) process.env.TELEGRAM_API_IP = v.pin;
+          else delete process.env.TELEGRAM_API_IP;
+          console.log(`[telegram] route re-resolved: ${v.mode}${v.pin ? ` (${v.pin})` : ""}`);
+        } else {
+          console.log(`[telegram] still unreachable: ${v.diagnosis.join(" | ").slice(0, 300)}`);
+        }
+      }).catch(() => {});
     }
+    setTimeout(() => { launchWithRetry(attempt + 1).catch(() => {}); }, wait);
+  };
+
+  try {
+    // Telegraf's launch() promise lives as long as long polling does — it does
+    // NOT resolve on success. Report online once polling has been started, and
+    // only use the rejection path for real failures.
+    bot.launch().catch(onFailure);
+    console.log(`[telegram] gateway online in ${bootSecs()}. Send /start in Telegram.`);
+  } catch (e) {
+    onFailure(e);
   }
 }
 await launchWithRetry();
