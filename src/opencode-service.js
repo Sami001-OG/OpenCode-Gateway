@@ -281,11 +281,14 @@ export class OpencodeService {
       const list = await readMessages();
       if (!list) continue;
       const fresh = list.filter((m) => m?.info?.role === "assistant" && !beforeIds.has(m.info.id));
-      if (fresh.length) return this.renderAnswer(fresh[fresh.length - 1]);
-      if (sawBusy) {
-        const lastAssistant = [...list].reverse().find((m) => m?.info?.role === "assistant");
-        if (lastAssistant) return this.renderAnswer(lastAssistant);
-        throw new Error("OpenCode finished but left no answer — check /messages");
+      // v2 sessions can contain assistant records with only tool/reasoning
+      // content. Pick the newest one that actually has text instead of failing.
+      const answerWithText = (arr) => [...arr].reverse().find((m) =>
+        (m?.parts ?? []).some((p) => p?.type === "text" && String(p.text ?? "").trim()));
+      const pick = answerWithText(fresh);
+      if (pick) return this.renderAnswer(pick);
+      if (fresh.length || sawBusy) {
+        return "(OpenCode finished but returned no text — check /messages for tool activity)";
       }
       // idle but our run hasn't appeared yet (start-up race) — keep waiting
     }
