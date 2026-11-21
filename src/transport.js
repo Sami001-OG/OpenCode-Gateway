@@ -96,8 +96,9 @@ export async function rawFetch(baseUrl, headers, path, { method = "GET", body } 
 export function normalizeMessage(m) {
   const parts = [];
   for (const c of m?.content ?? []) {
+    // Only genuine text is user-facing. v2 also carries a `reasoning` block —
+    // exposing it would leak the model's private chain-of-thought to chat.
     if (c?.type === "text" && typeof c.text === "string") parts.push({ type: "text", text: c.text });
-    else if (c?.type === "reasoning" && typeof c.text === "string") parts.push({ type: "text", text: c.text });
   }
   return {
     info: { id: m?.id, role: m?.type, sessionID: m?.sessionID, error: m?.error },

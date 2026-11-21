@@ -130,12 +130,17 @@ test("v2 transport sends Basic auth + directory header", () => {
 test("v2 messages map into the v1 shape the gateway renders", () => {
   const m = normalizeMessage({
     id: "msg_1", type: "assistant",
-    content: [{ type: "text", text: "hello" }, { type: "tool", id: "t1" }],
+    content: [
+      { type: "reasoning", text: "PRIVATE REASONING" },
+      { type: "text", text: "hello" },
+      { type: "tool", id: "t1" },
+    ],
   });
   assert.equal(m.info.id, "msg_1");
   assert.equal(m.info.role, "assistant");
-  assert.equal(m.parts.length, 1);
+  assert.equal(m.parts.length, 1, "reasoning/tools must not reach the user");
   assert.equal(m.parts[0].text, "hello");
+  assert.ok(!JSON.stringify(m).includes("PRIVATE REASONING"));
 });
 
 test("transport auto-detects v1 vs v2 servers", async () => {
