@@ -10,11 +10,11 @@ Heavy tasks survive flaky networks; restarts take seconds.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org)
-[![OpenCode](https://img.shields.io/badge/opencode-1.18.x-8A63D2)](https://opencode.ai)
+[![OpenCode](https://img.shields.io/badge/opencode-v1%20%2B%20v2-8A63D2)](https://opencode.ai)
 [![CI](https://img.shields.io/badge/ci-passing-brightgreen)](.github/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Termux-lightgrey)](#)
 
-[How it works](#-how-it-works) · [Quick start](#-quick-start) · [Everyday use](#-everyday-use) · [Commands](#-command-map) · [Computer controls](#-computer-controls) · [Restricted networks](#-restricted-networks) · [Troubleshooting](#-troubleshooting) · [Security](#-security-read-this-first)
+[How it works](#-how-it-works) · [Quick start](#-quick-start) · [Termux](#-termux-android) · [Everyday use](#-everyday-use) · [Commands](#-command-map) · [Computer controls](#-computer-controls) · [Restricted networks](#-restricted-networks) · [Troubleshooting](#-troubleshooting) · [Security](#-security-read-this-first)
 
 </div>
 
@@ -55,7 +55,7 @@ Why it's built this way:
 
 ## 🚀 Quick start
 
-**Prerequisites:** [Node.js](https://nodejs.org) ≥ 20 · `opencode --version` works (the gateway drives *your* OpenCode and auth) · a Telegram account.
+**Prerequisites:** [Node.js](https://nodejs.org) ≥ 20 · `opencode --version` works (OpenCode **v1 or v2** — both are supported; the gateway drives *your* OpenCode and auth) · a Telegram account.
 
 **1. Create the bot (2 min).** In Telegram: **@BotFather** → `/newbot` → copy the token.
 Then **@userinfobot** → copy your numeric chat ID.
@@ -105,9 +105,10 @@ opencode gateway start
 The gateway auto-detects **both OpenCode API generations**: v1 (`opencode <= 1.19.x`)
 and v2 (`opencode >= 2.x`, the kind Termux ships). For v2 it reads the password printed
 by `opencode serve`; if you attach to a v2 server you started yourself, also set
-`OPENCODE_SERVER_PASSWORD` in `.env`. Some convenience commands (`/share`, `/fork`,
-`/summarize`, `/shell`, `/diff`) are not exposed by the v2 API and return a clear
-"not available" message; chatting, tools, sessions, models and permissions work.
+`OPENCODE_SERVER_PASSWORD` in `.env`. Some convenience commands (`/share`, `/unshare`,
+`/fork`, `/summarize`, `/undo`, `/diff`, `/todo`, `/shell`) are not exposed by the v2 API
+and return a clear "not available" message; chatting, tools, sessions, models and
+permissions work.
 
 <details>
 <summary><b>🐳 Docker</b></summary>
@@ -117,7 +118,7 @@ docker build -t oc-tg .
 docker run --env-file .env -v /path/to/project:/work oc-tg
 ```
 
-The image includes the `opencode` CLI (the gateway spawns `opencode serve`), so no
+The image includes an OpenCode **v1** CLI (the gateway spawns `opencode serve`), so no
 host install is needed. OpenCode auth is **not** baked in: either mount your OpenCode
 config/auth directory into the container, or set `OPENCODE_SERVER_URL` to attach to a
 server you already run. The container runs the gateway directly (`src/index.js`);
@@ -162,6 +163,10 @@ daemon commands (`start/stop/restart`) are for host installs.
 
 All 13 built-ins work automatically in plain chat. These force a specific tool
 (read-only ones hit the API directly — fast, no LLM cost):
+
+> On OpenCode **v2** servers, `/share`, `/unshare`, `/fork`, `/summarize`, `/undo`,
+> `/diff`, `/todo` and `/shell` are not exposed by the v2 API and reply with a clear
+> "not available" message. Chatting, tools, sessions, models and permissions work on both.
 
 | Command | Tool | Notes |
 |---|---|---|
@@ -321,6 +326,7 @@ Run `opencode gateway logs` / `status` before anything else.
 ```text
 src/index.js             Telegram gateway — every command
 src/opencode-service.js  core: sessions, tools, resilient task runner, activity feed
+src/transport.js         dual OpenCode transport (v1 native / v2 /api + Basic auth)
 src/net.js               auto-route engine (direct→pin→proxy→diagnose) + Bot API client
 src/cli.js               opencode-gateway: setup wizard + daemon control
 src/commands.js          canonical Telegram menu (published by setup)
@@ -335,7 +341,7 @@ Dockerfile               container run
 ## 🗺️ Roadmap
 
 - WhatsApp adapter — planned, deferred. Telegram is the supported transport.
-- npm publish (`opencode-gateway` global), Windows auto-start task.
+- npm publish (`opencode-telegram-gateway` global), Windows auto-start task.
 
 ## 🤝 Contributing
 
