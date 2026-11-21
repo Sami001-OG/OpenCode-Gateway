@@ -260,7 +260,7 @@ export class OpencodeService {
     };
     // poll until idle AND our answer is visible (guards the start-up race)
     const end = Date.now() + timeoutMs;
-    let sawBusy = false, statusErrs = 0;
+    let sawBusy = false, statusErrs = 0, quiet = 0, lastSignature = "";
     while (Date.now() < end) {
       await sleep(pollMs);
       let st = null, statusOk = true;
@@ -286,10 +286,25 @@ export class OpencodeService {
       const answerWithText = (arr) => [...arr].reverse().find((m) =>
         (m?.parts ?? []).some((p) => p?.type === "text" && String(p.text ?? "").trim()));
       const pick = answerWithText(fresh);
+      if (process.env.GW_DEBUG) console.error("[poll]", JSON.stringify({
+        fresh: fresh.length, roles: list.map((m) => m?.info?.role),
+        parts: list.map((m) => (m?.parts ?? []).map((p) => p?.type).join(",")),
+      }));
       if (pick) return this.renderAnswer(pick);
       if (fresh.length || sawBusy) {
-        return "(OpenCode finished but returned no text — check /messages for tool activity)";
+        // v2 streams assistant records: the first one may hold only reasoning
+        // or a partial text. Wait until the content stops changing before
+        // concluding the agent genuinely returned no text.
+        const signature = list.map((m) =>
+          `${m?.info?.id}:${(m?.parts ?? []).map((p) => p?.text ?? "").join("")}`).join("|");
+        quiet = signature === lastSignature ? quiet + 1 : 0;
+        lastSignature = signature;
+        if (quiet >= 2) {
+          return "(OpenCode finished but returned no text — check /messages for tool activity)";
+        }
+        continue;
       }
+      quiet = 0;
       // idle but our run hasn't appeared yet (start-up race) — keep waiting
     }
     throw new Error("timed out waiting for OpenCode (45m) — check /messages for partial output");

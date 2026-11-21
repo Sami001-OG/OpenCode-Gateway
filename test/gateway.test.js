@@ -96,6 +96,28 @@ test("sendAndWait retries when the POST genuinely failed", async () => {
   assert.equal(answer, "ok");
 });
 
+test("sendAndWait waits for streamed v2 text instead of returning the no-text fallback", async () => {
+  const svc = new OpencodeService();
+  let reads = 0;
+  svc.client = {
+    session: {
+      messages: async () => {
+        reads++;
+        if (reads === 1) return [oldMsg()];
+        const text = reads === 2 ? "" : "final answer";
+        return [oldMsg(), { info: { id: "a1", role: "assistant" }, parts: [{ type: "text", text }] }];
+      },
+      promptAsync: async () => ({}),
+      status: async () => ({ [sid]: { type: "idle" } }),
+    },
+  };
+  const answer = await svc.sendAndWait(
+    user, sid, { parts: [{ type: "text", text: "go" }] },
+    { pollMs: 1, timeoutMs: 1000 }
+  );
+  assert.equal(answer, "final answer");
+});
+
 test("quoteWindowsArg makes chat-supplied /cli args shell-safe", () => {
   assert.equal(quoteWindowsArg("&calc"), '"&calc"');
   assert.equal(quoteWindowsArg("a|b>c"), '"a|b>c"');
