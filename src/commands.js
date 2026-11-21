@@ -10,6 +10,7 @@ export const COMMANDS = [
   ["messages", "Last messages + IDs"],
   ["abort", "Stop the running task"],
   ["share", "Public link for session"],
+  ["unshare", "Remove public link"],
   ["fork", "Branch current session"],
   ["summarize", "Summarize session"],
   ["undo", "Revert a message"],

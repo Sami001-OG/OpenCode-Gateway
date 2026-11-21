@@ -76,6 +76,7 @@ SESSIONS
 /use <number, name, or id> — switch session
 /abort — stop running task
 /share — public link for session
+/unshare — remove public link
 /fork — branch current session
 /summarize — compact summary
 /undo <messageID> — revert a message
@@ -265,9 +266,7 @@ bot.command("use", async (ctx) => {
     }
   }
   if (!target) target = { id: q, title: null }; // raw ID paste — still works
-  const st = opencode.getState(key(ctx));
-  st.sessionID = target.id;
-  if (target.title) st.title = target.title.replace(/^▶ /, "");
+  const st = opencode.switchSession(key(ctx), target);
   await ctx.reply(`Switched to "${st.title || target.id}"`);
 });
 bot.command("abort", async (ctx) => {

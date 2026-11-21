@@ -41,6 +41,17 @@ function parseModel(modelStr) {
   };
 }
 
+// cmd.exe: only double quotes neutralise & | > < ^ (and whitespace).
+// Embedded quotes are doubled; % and ! still expand, and CR/LF/NUL would
+// smuggle a second command — reject those outright. /cli args come from chat.
+export function quoteWindowsArg(value) {
+  const s = String(value);
+  if (/[%!\r\n\0]/.test(s)) {
+    throw new Error(`unsafe /cli argument: ${JSON.stringify(s.slice(0, 80))}`);
+  }
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
 // Unwrap opencode's sometimes double-encoded error strings:
 // { message: "\"Model not found: ...\"" } -> Model not found: ...
 export function cleanErrorText(v) {
@@ -187,6 +198,16 @@ export class OpencodeService {
   getModel(userKey) { return this.getState(userKey).model || "(opencode default)"; }
   setAgent(userKey, a) { this.getState(userKey).agent = a; }
 
+  // Switch the active session AND keep the session->user map in sync, so live
+  // tool/activity labels keep working after /use or /fork.
+  switchSession(userKey, target) {
+    const st = this.getState(userKey);
+    st.sessionID = target.id;
+    if (target.title) st.title = String(target.title).replace(/^▶ /, "");
+    this.trackSession(userKey, st.sessionID);
+    return st;
+  }
+
   // ---------- core prompt (uses ALL tools automatically) ----------
   // Heavy-task safe: fires promptAsync (returns immediately) then polls
   // session.status until idle and reads the answer. No single HTTP request
@@ -199,13 +220,34 @@ export class OpencodeService {
       const msgs = unwrap(await this.client.session.messages({ path: { id: sessionID }, query: { limit: 3 } }));
       for (const m of (Array.isArray(msgs) ? msgs : [])) if (m?.info?.id) beforeIds.add(m.info.id);
     } catch {}
-    // fire (a failed POST means nothing started server-side, so retrying is safe)
+    // A failed POST is NOT proof nothing started: a flaky route can lose the
+    // response after the server accepted the prompt. Blindly retrying would run
+    // the task twice (two edits, two shell commands). Check whether it landed.
+    const promptText = body?.parts?.find?.((p) => p?.type === "text")?.text ?? "";
+    const promptLanded = async () => {
+      try {
+        const all = unwrap(await this.client.session.status());
+        const st = all?.[sessionID];
+        if (st && st.type !== "idle") return true;
+      } catch {}
+      try {
+        const msgs = unwrap(await this.client.session.messages({ path: { id: sessionID }, query: { limit: 8 } }));
+        return (Array.isArray(msgs) ? msgs : []).some((m) =>
+          m?.info?.role === "user" && !beforeIds.has(m.info.id) &&
+          (m.parts ?? []).some((p) => p?.type === "text" && p.text === promptText)
+        );
+      } catch { return false; }
+    };
     let sent = false, lastErr = null;
     for (let i = 0; i < 4 && !sent; i++) {
       try {
         unwrap(await this.client.session.promptAsync({ path: { id: sessionID }, body }));
         sent = true;
-      } catch (e) { lastErr = e; await sleep(2000 * (i + 1)); }
+      } catch (e) {
+        lastErr = e;
+        if (await promptLanded()) { sent = true; break; } // accepted, reply lost — never re-run
+        await sleep(2000 * (i + 1));
+      }
     }
     if (!sent) throw new Error(`could not reach OpenCode server: ${lastErr?.message ?? lastErr}`);
     const readMessages = async () => {
@@ -372,7 +414,7 @@ export class OpencodeService {
   async forkSession(userKey) {
     const id = await this.ensureSession(userKey);
     const forked = unwrap(await this.client.session.fork({ path: { id } })) ?? {};
-    if (forked.id) this.getState(userKey).sessionID = forked.id;
+    if (forked.id) this.switchSession(userKey, forked);
     return forked;
   }
   async summarizeSession(userKey) {
@@ -449,10 +491,12 @@ export class OpencodeService {
   runCli(args, { cwd = process.cwd() } = {}) {
     if (!this.cliEnabled) throw new Error("Raw CLI is disabled (CLI_ENABLED=false).");
     return new Promise((resolve, reject) => {
-      // win32: opencode is a shim needing a shell — pass ONE command string (avoids DEP0190)
-      const quote = (a) => /[\s"]/.test(a) ? `"${String(a).replace(/"/g, '\\"')}"` : String(a);
+      // win32: opencode is a .cmd shim and needs cmd.exe. Quote every argument
+      // so chat-supplied metacharacters (& | > < ^) stay literal.
       const child = process.platform === "win32"
-        ? spawn(`opencode ${args.map(quote).join(" ")}`, { cwd, shell: true })
+        ? spawn(`opencode ${args.map(quoteWindowsArg).join(" ")}`, {
+            cwd, shell: true, windowsVerbatimArguments: true,
+          })
         : spawn("opencode", args, { cwd });
       let out = "", err = "";
       const timer = setTimeout(() => {

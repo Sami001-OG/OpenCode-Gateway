@@ -28,6 +28,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   live progress in `start`, orphan-only port cleanup, PID-reuse guard.
 - Token scrubbing in all log output.
 - Canonical command menu (`src/commands.js`) shared by setup and docs.
+- Behavioural test suite (`node --test`) covering session tracking, duplicate-run
+  prevention, Windows `/cli` quoting and menu/handler consistency. `npm test` now
+  runs it in addition to syntax checks.
+
+### Fixed
+- `/use` and `/fork` now keep the session→user map in sync, so live tool/activity
+  labels keep working after switching sessions.
+- Flaky-network duplicate runs: `promptAsync` retries now verify the prompt actually
+  landed (busy status or a matching new user message) before re-posting, so a lost
+  response can no longer execute a task twice.
+- Windows `/cli`: every argument is quoted for cmd.exe and shell metacharacters,
+  `%VAR%`/`!VAR!` expansion tokens and CR/LF/NUL are rejected.
+- `/unshare` added to the canonical command menu and `/help` (47 commands).
+- Docker image now installs the `opencode` CLI and builds from the lockfile; README
+  no longer claims periodic route re-resolution (it happens on failed launches).
 
 ## [0.2.0] - 2026-09-07
 

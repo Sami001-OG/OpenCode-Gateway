@@ -74,7 +74,7 @@ opencode gateway setup
 ```
 
 That's it. The wizard validates your bot, heals restricted networks automatically,
-writes `.env`, publishes the Menu ☰ button with all 46 commands, and offers to start
+writes `.env`, publishes the Menu ☰ button with all 47 commands, and offers to start
 the gateway. `opencode gateway start` then opens a live dashboard (status, sessions,
 log tail — `q` detaches, `r` restarts, `s` stops, `l` shows more log).
 
@@ -93,8 +93,11 @@ docker build -t oc-tg .
 docker run --env-file .env -v /path/to/project:/work oc-tg
 ```
 
-Note: the container runs the gateway directly (`src/index.js`); daemon commands
-(`start/stop/restart`) are for host installs.
+The image includes the `opencode` CLI (the gateway spawns `opencode serve`), so no
+host install is needed. OpenCode auth is **not** baked in: either mount your OpenCode
+config/auth directory into the container, or set `OPENCODE_SERVER_URL` to attach to a
+server you already run. The container runs the gateway directly (`src/index.js`);
+daemon commands (`start/stop/restart`) are for host installs.
 
 </details>
 
@@ -231,8 +234,9 @@ no extra accounts, no VPN required in most cases:
 3. **`HTTPS_PROXY`** — picked up automatically when set;
 4. **clear diagnosis** — if everything fails you get the exact broken layer (`TCP blocked`, `TLS interfered`, …) plus options (VPN, proxy, own relay).
 
-The gateway re-resolves the route every few minutes on its own, so it heals itself
-when the network changes — no restart needed. Power users can additionally point
+If launch fails, the gateway re-resolves the route automatically on every third
+retry and keeps trying in the background, so a flaky network heals without a manual
+restart. Power users can additionally point
 everything at their own reverse proxy (generic — any proxy you trust, no vendor
 needed) via `TELEGRAM_API_ROOT`.
 
