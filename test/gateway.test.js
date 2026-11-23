@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { OpencodeService, quoteWindowsArg, parseModel } from "../src/opencode-service.js";
+import { OpencodeService, quoteWindowsArg, parseModel, safePath } from "../src/opencode-service.js";
 import { COMMANDS } from "../src/commands.js";
 import { isTermux, authHeaders, normalizeMessage, createTransport } from "../src/transport.js";
 import { TelegramUI, normalizeProviders } from "../src/interactive.js";
@@ -261,6 +261,42 @@ test("permission buttons are single-use, owner-bound and expiring", async () => 
   assert.equal(ui.permTokens.get(token).expires < Date.now(), true);
 });
 
+test("question keyboard uses short tokens and routes answers", async () => {
+  const handlers = {};
+  const stubBot = { on: (type, fn) => { handlers[type] = fn; } };
+  const answered = [];
+  const rejected = [];
+  const stubSvc = {
+    pendingQuestions: new Map([["42:42:0", { sessionID: "ses_x", requestID: "r1", fields: [{ key: "q0", title: "Pick", question: "?", options: ["Alpha", "Beta"] }] }]]),
+    answerQuestion: async (k, a) => { answered.push([k, a]); },
+    rejectQuestion: async (k) => { rejected.push(k); },
+  };
+  const ui = new TelegramUI(stubBot, stubSvc, () => "42:42:0");
+  ui.register();
+  const kb = ui.questionKeyboard("42:42:0", ["Alpha", "Beta"]);
+  const pick = kb.reply_markup.inline_keyboard[0][0].callback_data;
+  const reject = kb.reply_markup.inline_keyboard[2][1].callback_data;
+  assert.ok(Buffer.byteLength(pick) <= 64);
+
+  const click = async (data) => handlers.callback_query({
+    answerCbQuery: async () => {},
+    editMessageText: async () => {},
+    callbackQuery: { data },
+    from: { id: 42 },
+    chat: { id: 42 },
+    message: { message_thread_id: 0 },
+  });
+
+  await click(pick.replace(/:0$/, ":1")); // Beta
+  assert.deepEqual(answered, [["42:42:0", [["Beta"]]]]);
+
+  // re-create token for reject
+  const kb2 = ui.questionKeyboard("42:42:0", ["Alpha"]);
+  const rej2 = kb2.reply_markup.inline_keyboard[1][1].callback_data;
+  await click(rej2);
+  assert.deepEqual(rejected, ["42:42:0"]);
+});
+
 test("interactive keyboards keep callback_data within Telegram's 64-byte limit", async () => {
   const stubBot = { on() {} };
   const stubService = { getModel: () => "x", getState: () => ({ sessionID: null }) };
@@ -340,4 +376,21 @@ test("canonical Telegram menu stays in sync with registered handlers", () => {
   const expected = menu.filter((c) => !telegrafBuiltins.has(c)).sort();
   assert.deepEqual(handlers.sort(), expected);
   assert.equal(new Set(menu).size, menu.length, "duplicate commands in menu");
+});
+
+test("safePath blocks absolute and traversing paths", () => {
+  assert.equal(safePath("src/index.js"), "src/index.js");
+  assert.throws(() => safePath("/etc/passwd"), /relative/);
+  assert.throws(() => safePath("../secret"), /escapes/);
+  assert.throws(() => safePath("a/../../b"), /escapes/);
+});
+
+test("memory @file expansion ignores traversal refs", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-mem2-"));
+  try {
+    const m = new Memory(dir);
+    let read = false;
+    await m.expand("see @../secret.txt", async () => { read = true; return "x"; });
+    assert.equal(read, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

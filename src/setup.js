@@ -290,7 +290,10 @@ export async function runSetup({ flags, dir, pkgRoot }) {
   }
 
   // ---- 6. review ----
+  // Preserve every existing key (server URL/password, policy, webhook secret, …)
+  // — rebuilding from a whitelist used to silently drop them on re-run.
   const cfg = {
+    ...env,
     TELEGRAM_BOT_TOKEN: token,
     ALLOWED_USER_IDS: userIds,
     TELEGRAM_NOTIFY_CHAT_IDS: userIds,

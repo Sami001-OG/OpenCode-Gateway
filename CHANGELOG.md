@@ -37,7 +37,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   streams; the fallback now also requires 4s of SSE silence, so real answers are
   no longer dropped.
 - **Stale Telegram command menu**: commands (including `/restart`) are now
-  re-published at every boot with `setMyCommands` + `setChatMenuButton`.
+  re-published at every boot with `setMyCommands` + `setChatMenuButton` (default
+  and private-chat scopes).
+- **Permission replies bound to the requesting session**: permission buttons carry
+  the session id and owner Telegram ids, preventing cross-session/cross-user replies.
+- **Partial media downloads cleaned up**: failed/cancelled downloads remove partial
+  files; response/stream errors no longer leave dangling output.
 
 ### Changed
 - **Latency**: first poll now happens immediately (no guaranteed 3s sleep), poll
@@ -50,10 +55,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   accumulated and fed to Telegram drafts; streaming throttle reduced to 250ms.
 - **Answer correctness**: messages are ordered by timestamp, and only assistant
   messages created after the current prompt count as its answer.
+- **Safer rendering**: emoji-safe chunking and `disable_web_page_preview` for long replies.
+
+### Security
+- Chat-supplied file paths are contained to the work directory for `/read`, `/ls`,
+  `/write`, `/edit`, and `@file` memory references.
+- Bot tokens and server passwords are scrubbed from logs/errors; setup preserves
+  existing `.env` keys instead of dropping unmanaged secrets.
 
 ### Added
 - **Chat-initiated restart**: `/restart` (and the 🔌 Platform menu button) cleanly closes
   the OpenCode server, clears the pidfile, relaunches the detached daemon and exits.
+- **OpenCode question/form tool bridge**: `question.asked` / v2 `form.created`
+  questions render as Telegram buttons or accept a typed reply, then resume the run.
+- **Richer media intake**: photo, document, voice, audio, video, animation, video
+  note, sticker, and album buffering; 20MB Bot API size cap enforced before/after
+  download.
 - **OpenClaw/Hermes-inspired feature merge**: native `sendMessageDraft` streaming with
   Stop button, Telegram inline mode, group mention activation + per-topic sessions,
   voice-note intake, persistent memory with `@file` references, `/checkpoint`/`/rollback`,

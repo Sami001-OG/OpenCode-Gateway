@@ -39,6 +39,7 @@ export class TelegramUI {
     this.features = features;
     this.state = new Map();
     this.permTokens = new Map(); // short token -> { userKey, permissionID }
+    this.qstTokens = new Map();  // short token -> { userKey, expires }
     this.tokenSeq = 0;
   }
 
@@ -249,7 +250,7 @@ export class TelegramUI {
     await this.present(ctx, menu);
   }
 
-  permissionKeyboard(permissionID, ownerKeys = []) {
+  permissionKeyboard(permissionID, ownerKeys = [], sessionID = "") {
     const now = Date.now();
     for (const [t, e] of this.permTokens) {
       if (!e || e.expires < now) this.permTokens.delete(t);
@@ -257,6 +258,8 @@ export class TelegramUI {
     const token = `p${++this.tokenSeq}`;
     this.permTokens.set(token, {
       permissionID,
+      sessionID,
+      // Owners are Telegram user ids, not composite session keys.
       owners: new Set(ownerKeys.map(String)),
       expires: now + 10 * 60 * 1000,
     });
@@ -264,6 +267,16 @@ export class TelegramUI {
       [btn("✅ Allow once", `prm:${token}:y`), btn("♾ Always", `prm:${token}:a`)],
       [btn("❌ Deny", `prm:${token}:n`)],
     ]);
+  }
+
+  questionKeyboard(userKey, options = []) {
+    const now = Date.now();
+    for (const [t, e] of this.qstTokens) if (!e || e.expires < now) this.qstTokens.delete(t);
+    const token = `q${++this.tokenSeq}`;
+    this.qstTokens.set(token, { userKey, expires: now + 10 * 60 * 1000 });
+    const rows = options.slice(0, 8).map((o, i) => [btn(short(String(o), 40), `qst:${token}:${i}`)]);
+    rows.push([btn("✍️ Type answer", `qst:${token}:custom`), btn("❌ Dismiss", `qst:${token}:reject`)]);
+    return kb(rows);
   }
 
   // ---------- callback router ----------
@@ -286,15 +299,34 @@ export class TelegramUI {
         if (kind === "hint") return await this.hint(ctx, rest[0], Number(rest[1]));
         if (kind === "sel") return await this.select(ctx, rest[0], Number(rest[1]));
         if (kind === "var") return await this.variant(ctx, Number(rest[0]));
+        if (kind === "qst") {
+          const entry = this.qstTokens.get(rest[0]);
+          if (!entry || entry.expires < Date.now()) return ctx.answerCbQuery("Question expired", { show_alert: true });
+          const targetKey = entry.userKey;
+          const q = this.opencode.pendingQuestions.get(targetKey);
+          if (!q) { this.qstTokens.delete(rest[0]); return ctx.answerCbQuery("Question expired", { show_alert: true }); }
+          if (rest[1] === "reject") {
+            this.qstTokens.delete(rest[0]);
+            await this.opencode.rejectQuestion(targetKey);
+            return this.edit(ctx, "❌ Question dismissed.");
+          }
+          if (rest[1] === "custom") return this.edit(ctx, "✍️ Type your answer in chat.");
+          const label = q.fields[0]?.options?.[Number(rest[1])];
+          if (label === undefined) return;
+          this.qstTokens.delete(rest[0]);
+          await this.opencode.answerQuestion(targetKey, [[label]]);
+          return this.edit(ctx, `✅ Answered: ${label}`);
+        }
         if (kind === "prm") {
           const entry = this.permTokens.get(rest[0]);
+          const userId = String(ctx.from?.id ?? "");
           if (!entry || entry.expires < Date.now() ||
-              (entry.owners.size && !entry.owners.has(k))) {
+              (entry.owners.size && !entry.owners.has(userId))) {
             return ctx.answerCbQuery("Not authorized or expired", { show_alert: true });
           }
           this.permTokens.delete(rest[0]); // single-use
           const response = rest[1] === "y" ? "allow" : rest[1] === "a" ? "always" : "deny";
-          await this.opencode.answerPermission(k, entry.permissionID, response);
+          await this.opencode.answerPermission(k, entry.permissionID, response, entry.sessionID);
           const label = { allow: "✅ Allowed once", always: "♾ Always allowed", deny: "❌ Denied" }[response];
           await this.edit(ctx, label);
         }

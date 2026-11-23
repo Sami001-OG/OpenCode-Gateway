@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Telegraf, Markup } from "telegraf";
-import { BUILTIN_TOOLS, OpencodeService, errorMessage } from "./opencode-service.js";
+import { BUILTIN_TOOLS, OpencodeService, errorMessage, safePath } from "./opencode-service.js";
 import { COMMANDS } from "./commands.js";
 import { createTelegramAgent, downloadTelegramFile, telegramApi, apiTarget } from "./net.js";
 import { TelegramUI } from "./interactive.js";
@@ -117,7 +117,7 @@ Object.assign(ui.features, {
 const HELP = `OpenCode gateway — dir: ${process.cwd()}
 
 Just type normally: I run it in OpenCode with ALL tools (bash/edit/read/grep/glob/web/skill/todo/lsp/MCP...).
-Send photos or documents too — I download and attach them (tap Menu ☰ for every command).
+Send photos, videos, audio, voice notes, stickers, or documents — I download and attach them (tap Menu ☰ for every command).
 /menu — interactive button menus for models, agents, sessions, tools, providers and system.
 
 SESSIONS
@@ -193,6 +193,11 @@ function chunk(text, size = 4000) {
   while (s.length > size) {
     let cut = s.lastIndexOf("\n", size);
     if (cut < size * 0.4) cut = size;
+    // Avoid splitting UTF-16 surrogate pairs (emoji).
+    if (cut > 0 && cut < s.length) {
+      const code = s.charCodeAt(cut - 1);
+      if (code >= 0xD800 && code <= 0xDBFF) cut -= 1;
+    }
     out.push(s.slice(0, cut));
     s = s.slice(cut);
   }
@@ -201,7 +206,9 @@ function chunk(text, size = 4000) {
 }
 
 async function replyLong(ctx, text) {
-  for (const part of chunk(text)) await tgCall(() => ctx.reply(part, threadExtra(ctx)));
+  for (const part of chunk(text)) {
+    await tgCall(() => ctx.reply(part, { ...threadExtra(ctx), disable_web_page_preview: true }));
+  }
 }
 
 // Telegram calls fail transiently on flaky routes (VPN flaps, throttled DCs).
@@ -233,8 +240,14 @@ function fmtJson(v, max = 3800) {
   return s.length > max ? s.slice(0, max) + `\n…(truncated ${s.length - max} chars)` : s;
 }
 
-// Bot tokens leak into Bot API error URLs — scrub before any log output.
-const scrub = (s) => String(s ?? "").replace(/\/bot\d+:[\w-]+/g, "/bot<redacted>");
+// Bot tokens/passwords leak into error URLs/logs — scrub before any output.
+const scrub = (s) => {
+  let out = String(s ?? "").replace(/\/bot\d+:[\w-]+/g, "/bot<redacted>");
+  const pw = process.env.OPENCODE_SERVER_PASSWORD;
+  if (pw) out = out.split(pw).join("<redacted>");
+  out = out.replace(/server password\s+\S+/gi, "server password <redacted>");
+  return out;
+};
 
 async function runAndReply(ctx, label, fn, { quiet = false } = {}) {
   let working = null;
@@ -428,10 +441,14 @@ bot.command("read", async (ctx) => {
 });
 bot.command("edit", async (ctx) => {
   if (!arg(ctx)) return ctx.reply("Usage: /edit <path> :: <old text> :: <new text>");
+  try { safePath(arg(ctx).split("::")[0]); }
+  catch (e) { return ctx.reply(e.message, threadExtra(ctx)); }
   await runAndReply(ctx, "Editing", async () => opencode.useTool(key(ctx), "edit", arg(ctx)));
 });
 bot.command("write", async (ctx) => {
   if (!arg(ctx)) return ctx.reply("Usage: /write <path> :: <content>");
+  try { safePath(arg(ctx).split("::")[0]); }
+  catch (e) { return ctx.reply(e.message, threadExtra(ctx)); }
   await runAndReply(ctx, "Writing", async () => opencode.useTool(key(ctx), "write", arg(ctx)));
 });
 bot.command("grep", async (ctx) => {
@@ -666,6 +683,15 @@ bot.on("inline_query", async (ctx) => {
 // ----- plain chat = full agent with every tool -----
 bot.on("text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
+  // A pending agent question is answered directly — not as a new prompt
+  // (the run is blocked waiting for this answer).
+  if (opencode.pendingQuestions.has(key(ctx))) {
+    try {
+      await opencode.answerQuestion(key(ctx), [[ctx.message.text]]);
+      await ctx.reply("✅ Answer sent.", threadExtra(ctx));
+    } catch (e) { await ctx.reply(`Could not answer: ${e.message}`, threadExtra(ctx)); }
+    return;
+  }
   const withRefs = await memory.expand(ctx.message.text, (p) => opencode.readFile(p));
   const withMemory = withRefs + memory.context();
   if (String(process.env.CHECKPOINT_ON_PROMPT ?? "").toLowerCase() === "true") checkpoints.create("auto");
@@ -678,7 +704,12 @@ bot.on("text", async (ctx) => {
 const UPLOADS = path.join(process.cwd(), ".telegram-uploads");
 try { fs.mkdirSync(UPLOADS, { recursive: true }); } catch {}
 
-async function receiveFile(fileId, fallbackName, caption) {
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // Telegram Bot API download limit
+
+async function receiveFile(fileId, fallbackName, caption, declaredSize = 0) {
+  if (declaredSize > MAX_UPLOAD_BYTES) {
+    throw new Error("File too large — Bot API caps downloads at 20MB.");
+  }
   let info;
   try {
     info = await telegramApi("getFile", { file_id: fileId });
@@ -686,71 +717,93 @@ async function receiveFile(fileId, fallbackName, caption) {
     throw new Error(`download failed at getFile (Telegram route flaky?): ${scrub(e.message)}`);
   }
   const fpath = info?.result?.file_path;
+  const remoteSize = Number(info?.result?.file_size ?? declaredSize ?? 0);
+  if (remoteSize > MAX_UPLOAD_BYTES) throw new Error("File too large — Bot API caps downloads at 20MB.");
   if (!fpath) throw new Error(`download failed: Telegram returned no file path (${JSON.stringify(info).slice(0, 150)})`);
   const safe = `${Date.now()}_${String(fileId).slice(-8)}_${path.basename(fallbackName).replace(/[^\w.\-]+/g, "_")}`;
   const dest = path.join(UPLOADS, safe);
   try {
     await downloadTelegramFile(fpath, dest);
+    let size = 0;
+    try { size = fs.statSync(dest).size; } catch {}
+    if (!size) throw new Error("download failed: received empty file — resend it");
+    if (size > MAX_UPLOAD_BYTES) throw new Error("File too large — Bot API caps downloads at 20MB.");
+    const text = caption?.trim()
+      ? `${caption}\n\n[attached file saved at: ${dest}]`
+      : `Work with the attached file saved at: ${dest}`;
+    return { dest, text };
   } catch (e) {
-    throw new Error(`download failed mid-transfer (route flaky?): ${scrub(e.message)}`);
-  }
-  let size = 0;
-  try { size = fs.statSync(dest).size; } catch {}
-  if (!size) {
     try { fs.rmSync(dest, { force: true }); } catch {}
-    throw new Error("download failed: received empty file — resend it");
+    throw e instanceof Error ? e : new Error(scrub(String(e)));
   }
-  const text = caption?.trim()
-    ? `${caption}\n\n[attached file saved at: ${dest}]`
-    : `Work with the attached file saved at: ${dest}`;
-  return { dest, text };
+}
+
+const albumBuf = new Map(); // media_group_id -> { timer, ctx, items: [{fileId,name,mime,size}] }
+function queueMedia(ctx, item) {
+  const gid = ctx.message?.media_group_id;
+  if (!gid) return handleMedia(ctx, [item], ctx.message?.caption || "");
+  let g = albumBuf.get(gid);
+  if (!g) { g = { ctx, items: [], caption: ctx.message?.caption || "" }; albumBuf.set(gid, g); }
+  if (ctx.message?.caption) g.caption = ctx.message.caption;
+  g.items.push(item);
+  clearTimeout(g.timer);
+  g.timer = setTimeout(async () => {
+    albumBuf.delete(gid);
+    await handleMedia(g.ctx, g.items, g.caption);
+  }, 900);
+}
+async function handleMedia(ctx, items, caption) {
+  await runAndReply(ctx, items.length > 1 ? "Receiving files" : "Receiving file", async () => {
+    const files = [];
+    const lines = [];
+    for (const it of items) {
+      const { dest, text } = await receiveFile(it.fileId, it.name, "", it.size);
+      const mime = it.mime || "application/octet-stream";
+      if (mime.startsWith("image/") || mime.startsWith("audio/") || mime === "application/pdf") {
+        files.push({ mime, url: pathToFileURL(dest).href, filename: path.basename(dest) });
+      }
+      lines.push(`[attached: ${dest} (${mime})]`);
+    }
+    const prompt = (caption?.trim() ? caption.trim() + "\n\n" : "") + lines.join("\n");
+    return opencode.promptWithFiles(key(ctx), prompt, files);
+  });
 }
 
 bot.on("photo", async (ctx) => {
   const photos = ctx.message.photo ?? [];
   if (!photos.length) return;
-  const best = photos[photos.length - 1]; // largest
-  console.log(`[media] photo from ${key(ctx)}: ${photos.length} sizes, best ${best.width}x${best.height}, caption=${JSON.stringify((ctx.message.caption ?? "").slice(0, 80))}`);
-  await runAndReply(ctx, "Receiving photo", async () => {
-    const { dest, text } = await receiveFile(best.file_id, "photo.jpg", ctx.message.caption);
-    console.log(`[media] photo saved: ${dest}`);
-    return opencode.promptWithFiles(key(ctx), text, [{
-      mime: "image/jpeg",
-      url: pathToFileURL(dest).href,
-      filename: path.basename(dest),
-    }]);
-  });
+  const best = photos[photos.length - 1];
+  queueMedia(ctx, { fileId: best.file_id, name: "photo.jpg", mime: "image/jpeg", size: best.file_size ?? 0 });
 });
-
+bot.on("video", async (ctx) => {
+  const v = ctx.message.video; if (!v) return;
+  queueMedia(ctx, { fileId: v.file_id, name: v.file_name || "video.mp4", mime: v.mime_type || "video/mp4", size: v.file_size ?? 0 });
+});
+bot.on("animation", async (ctx) => {
+  const a = ctx.message.animation; if (!a) return;
+  queueMedia(ctx, { fileId: a.file_id, name: a.file_name || "animation.mp4", mime: a.mime_type || "video/mp4", size: a.file_size ?? 0 });
+});
+bot.on("audio", async (ctx) => {
+  const a = ctx.message.audio; if (!a) return;
+  queueMedia(ctx, { fileId: a.file_id, name: a.file_name || "audio.mp3", mime: a.mime_type || "audio/mpeg", size: a.file_size ?? 0 });
+});
 bot.on("voice", async (ctx) => {
-  const v = ctx.message.voice;
-  if (!v) return;
-  await runAndReply(ctx, "Receiving voice note", async () => {
-    const { dest, text } = await receiveFile(v.file_id, "voice.ogg", ctx.message.caption);
-    return opencode.promptWithFiles(key(ctx), `Transcribe or analyse this voice note: ${text}`, [{
-      mime: "audio/ogg", url: pathToFileURL(dest).href, filename: path.basename(dest),
-    }]);
-  });
+  const v = ctx.message.voice; if (!v) return;
+  queueMedia(ctx, { fileId: v.file_id, name: "voice.ogg", mime: v.mime_type || "audio/ogg", size: v.file_size ?? 0 });
 });
-
+bot.on("video_note", async (ctx) => {
+  const v = ctx.message.video_note; if (!v) return;
+  queueMedia(ctx, { fileId: v.file_id, name: "video_note.mp4", mime: "video/mp4", size: v.file_size ?? 0 });
+});
+bot.on("sticker", async (ctx) => {
+  const s = ctx.message.sticker; if (!s) return;
+  const name = s.is_animated ? "sticker.tgs" : s.is_video ? "sticker.webm" : "sticker.webp";
+  const mime = s.is_animated ? "application/x-tgsticker" : s.is_video ? "video/webm" : "image/webp";
+  queueMedia(ctx, { fileId: s.file_id, name, mime, size: s.file_size ?? 0 });
+});
 bot.on("document", async (ctx) => {
-  const doc = ctx.message.document;
-  if (!doc) return;
-  console.log(`[media] document from ${key(ctx)}: name=${doc.file_name} mime=${doc.mime_type} size=${doc.file_size}`);
-  if ((doc.file_size ?? 0) > 20 * 1024 * 1024) {
-    await ctx.reply("File too large — Bot API caps downloads at 20MB.");
-    return;
-  }
-  await runAndReply(ctx, "Receiving file", async () => {
-    const { dest, text } = await receiveFile(doc.file_id, doc.file_name || "file.bin", ctx.message.caption);
-    console.log(`[media] document saved: ${dest}`);
-    const mime = doc.mime_type || "application/octet-stream";
-    // Vision-attach images; other files are referenced by path for the read tool.
-    const files = mime.startsWith("image/")
-      ? [{ mime, url: pathToFileURL(dest).href, filename: path.basename(dest) }]
-      : [];
-    return opencode.promptWithFiles(key(ctx), text, files);
-  });
+  const doc = ctx.message.document; if (!doc) return;
+  queueMedia(ctx, { fileId: doc.file_id, name: doc.file_name || "file.bin", mime: doc.mime_type || "application/octet-stream", size: doc.file_size ?? 0 });
 });
 
 // ----- push opencode events (permissions, errors) to owner chats -----
@@ -771,11 +824,34 @@ opencode.onEvent(async (event) => {
       const tool = typeof props.tool === "string" ? props.tool : (props.permission ?? props.action ?? "");
       const detail = errorMessage(props.request ?? props.message ?? "");
       const text = `Permission needed (${String(sessionID).slice(0, 12)}…): ${tool} ${detail}\n/allow ${pid} or /deny ${pid}`;
-      const keyboard = ui.permissionKeyboard(pid, ownerIds);
+      const keyboard = ui.permissionKeyboard(pid, ownerIds, sessionID);
       for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(chatIds.get(id) ?? id, text, { ...(threadIds.get(id) ? { message_thread_id: threadIds.get(id) } : {}), reply_markup: keyboard.reply_markup })).catch(() => {});
-    } else if (/question\.(asked|v2\.asked)/.test(type)) {
-      const text = `❓ OpenCode has a question:\n${errorMessage(props.question ?? props.text ?? props)}`;
-      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(chatIds.get(id) ?? id, text, threadIds.get(id) ? { message_thread_id: threadIds.get(id) } : undefined)).catch(() => {});
+    } else if (/question\.(asked|v2\.asked)/.test(type) ||
+               (type === "form.created" && (props.form?.metadata?.kind === "question" || props.metadata?.kind === "question"))) {
+      // v1: props.questions[]; v2: props.form.fields[]
+      const form = props.form ?? props;
+      const sessionID = props.sessionID ?? form.sessionID ?? "";
+      const requestID = props.id ?? form.id ?? props.requestID ?? "";
+      const userKey = opencode.sessionUser.get(sessionID);
+      const fields = (form.fields ?? props.questions ?? []).map((f, i) => ({
+        key: f.key ?? `q${i}`,
+        title: f.title ?? f.header ?? `Question ${i + 1}`,
+        question: f.description ?? f.question ?? "",
+        options: (f.options ?? []).map((o) => (typeof o === "string" ? o : (o.label ?? o.value))),
+        multiple: f.type === "multiselect" || f.multiple,
+      }));
+      if (userKey && requestID) {
+        opencode.pendingQuestions.set(userKey, { sessionID, requestID, fields });
+        const first = fields[0];
+        const text = `❓ ${first?.title ?? "OpenCode asks"}\n${first?.question ?? ""}`.slice(0, 4000);
+        const keyboard = ui.questionKeyboard(userKey, first?.options ?? []);
+        const chatId = chatIds.get(userKey.split(":")[0]) ?? userKey.split(":")[0];
+        const extra = { ...(threadIds.get(userKey.split(":")[0]) ? { message_thread_id: threadIds.get(userKey.split(":")[0]) } : {}), reply_markup: keyboard.reply_markup };
+        await tgCall(() => bot.telegram.sendMessage(chatId, text, extra)).catch(() => {});
+      }
+    } else if (/^(form\.(replied|cancelled)|question\.(replied|rejected))$/.test(type)) {
+      const u = opencode.sessionUser.get(props.sessionID ?? "");
+      if (u) opencode.pendingQuestions.delete(u);
     } else if (type === "session.error") {
       const text = `OpenCode error (${String(props.sessionID ?? "").slice(0, 16)}…): ${errorMessage(props.error)}`;
       for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(chatIds.get(id) ?? id, text, threadIds.get(id) ? { message_thread_id: threadIds.get(id) } : undefined)).catch(() => {});

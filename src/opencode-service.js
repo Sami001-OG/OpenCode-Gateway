@@ -12,6 +12,20 @@
 // behave identically to the CLI).
 
 import { spawn } from "node:child_process";
+import path from "node:path";
+
+// Chat-supplied paths must stay inside WORK_DIR.
+export function safePath(relPath) {
+  const s = String(relPath ?? "").trim();
+  if (!s) throw new Error("Path is required");
+  if (path.isAbsolute(s)) throw new Error("Path must be relative to the work directory");
+  const abs = path.resolve(process.cwd(), s);
+  const root = process.cwd();
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    throw new Error("Path escapes the work directory");
+  }
+  return s;
+}
 
 export const BUILTIN_TOOLS = [
   "bash", "edit", "write", "read", "grep", "glob", "lsp",
@@ -137,6 +151,7 @@ export class OpencodeService {
     this.lastSeenMessage = new Map(); // sessionID -> newest message id (avoids a pre-POST API call)
     this.streamBuffers = new Map(); // sessionID -> cumulative v2 text delta
     this.lastEventAt = new Map(); // sessionID -> last SSE event time (liveness)
+    this.pendingQuestions = new Map(); // userKey -> { sessionID, requestID, fields }
   }
 
   async init({ serverUrl = "", hostname = "127.0.0.1", port = 4096, timeout = 60000 } = {}) {
@@ -462,7 +477,7 @@ export class OpencodeService {
 
   // ---------- fast read-only API paths (no LLM) ----------
   async readFile(relPath) {
-    const data = unwrap(await this.client.file.read({ query: { path: relPath } }));
+    const data = unwrap(await this.client.file.read({ query: { path: safePath(relPath) } }));
     return typeof data === "string" ? data : (data?.content ?? JSON.stringify(data, null, 2));
   }
   async fileStatus() {
@@ -478,7 +493,7 @@ export class OpencodeService {
     return unwrap(await this.client.find.symbols({ query: { query } }));
   }
   async listDir(relPath = ".") {
-    return unwrap(await this.client.file.list({ query: { path: relPath } }));
+    return unwrap(await this.client.file.list({ query: { path: safePath(relPath) } }));
   }
 
   // ---------- session ops (CLI parity) ----------
@@ -559,14 +574,64 @@ export class OpencodeService {
     }));
     return extractText({ data: res });
   }
-  async answerPermission(userKey, permissionID, response /* once | always | reject */) {
-    const id = await this.ensureSession(userKey);
+  async answerPermission(userKey, permissionID, response /* once | always | reject */, sessionID = "") {
+    // Reply into the session that ASKED, not the clicker's current session.
+    const id = sessionID || await this.ensureSession(userKey);
     const map = { allow: "once", always: "always", deny: "reject", reject: "reject", once: "once" };
+    const reply = map[String(response).toLowerCase()] ?? "once";
+    if (this.apiMode === "v2" && this.transport?.raw) {
+      await this.transport.raw(`/session/${encodeURIComponent(id)}/permission/${encodeURIComponent(permissionID)}/reply`, {
+        method: "POST", body: { reply },
+      });
+      return true;
+    }
     // NB: top-level client method in SDK v1.18.x (not client.session.permission)
     return unwrap(await this.client.postSessionIdPermissionsPermissionId({
       path: { id, permissionID },
-      body: { response: map[String(response).toLowerCase()] ?? "once" },
+      body: { response: reply },
     }));
+  }
+
+  // ---------- question / form tool (agent asks the user) ----------
+  async answerQuestion(userKey, answers) {
+    const q = this.pendingQuestions.get(userKey);
+    if (!q) throw new Error("No pending question");
+    this.pendingQuestions.delete(userKey);
+    if (this.apiMode === "v2" && this.transport?.raw) {
+      // v2 forms: { answer: { q0: "label" | ["a","b"], ... } }
+      const answer = {};
+      q.fields.forEach((f, i) => {
+        const v = answers[i];
+        answer[f.key ?? `q${i}`] = f.multiple ? v : (Array.isArray(v) ? v[0] : v);
+      });
+      await this.transport.raw(`/session/${encodeURIComponent(q.sessionID)}/form/${encodeURIComponent(q.requestID)}/reply`, {
+        method: "POST", body: { answer },
+      });
+      return true;
+    }
+    // v1: POST /question/:requestID/reply { answers: string[][] }
+    const url = this.transport?.url ?? "";
+    const res = await fetch(`${url}/question/${encodeURIComponent(q.requestID)}/reply`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ answers }), signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`question reply failed: ${res.status}`);
+    return true;
+  }
+  async rejectQuestion(userKey) {
+    const q = this.pendingQuestions.get(userKey);
+    if (!q) return false;
+    this.pendingQuestions.delete(userKey);
+    try {
+      if (this.apiMode === "v2" && this.transport?.raw) {
+        await this.transport.raw(`/session/${encodeURIComponent(q.sessionID)}/form/${encodeURIComponent(q.requestID)}`, { method: "DELETE" });
+      } else {
+        await fetch(`${this.transport?.url ?? ""}/question/${encodeURIComponent(q.requestID)}/reject`, {
+          method: "POST", signal: AbortSignal.timeout(15000),
+        });
+      }
+    } catch {}
+    return true;
   }
 
   // ---------- v2-only catalogs (skills, worktrees) ----------

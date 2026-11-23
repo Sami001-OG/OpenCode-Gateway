@@ -27,6 +27,8 @@ export function authHeaders(password) {
 // Spawn `opencode serve` and read BOTH the URL and (for v2) the password from
 // stdout. Older servers print "opencode server listening on ...", newer ones
 // print "server listening on ..." followed by "server password ...".
+const redactServeOutput = (s) => String(s ?? "").replace(/server password\s+\S+/gi, "server password <redacted>");
+
 export function startServer({ hostname = "127.0.0.1", port = 4096, timeout = 60000 } = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn("opencode", ["serve", `--hostname=${hostname}`, `--port=${port}`], {
@@ -62,13 +64,13 @@ export function startServer({ hostname = "127.0.0.1", port = 4096, timeout = 600
     proc.on("exit", (code) => {
       if (!settled) {
         settled = true; clearTimeout(timer);
-        reject(new Error(`opencode serve exited ${code}: ${output.slice(-600)}`));
+        reject(new Error(`opencode serve exited ${code}: ${redactServeOutput(output.slice(-600))}`));
       }
     });
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        reject(new Error(`Timed out waiting for opencode server (${timeout}ms). ${output.slice(-400)}`));
+        reject(new Error(`Timed out waiting for opencode server (${timeout}ms). ${redactServeOutput(output.slice(-400))}`));
       }
     }, timeout);
   });

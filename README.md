@@ -4,7 +4,7 @@
 
 **Your entire OpenCode CLI — in your pocket.**
 
-Chat with your code agent, run shell commands, send photos and documents,
+Chat with your code agent, run shell commands, send media, answer agent questions,
 approve permissions, switch models, review diffs — all from Telegram.
 Heavy tasks survive flaky networks; restarts take seconds.
 
@@ -133,9 +133,10 @@ daemon commands (`start/stop/restart`) are for host installs.
 
 - **Just talk.** `fix the login bug on the staging branch` — the agent uses whatever tools it needs.
 - **Watch it work.** The temp message is live: `💭 thinking…` → `🔍 searching code…` → `✏️ editing files…` → answer. `/abort` stops anything.
-- **Send files.** Photos decode through vision; documents (PDF, code, text, GIFs…) are downloaded into `.telegram-uploads/` and handed to the agent with their path. Add a caption to say what to do with them.
+- **Send files.** Photos, documents, audio, video, animations, video notes, and stickers are downloaded into `.telegram-uploads/` and handed to the agent. Images/audio/PDFs are attached for model vision/reading when supported; other files are passed by path. Albums are buffered into one prompt. Add a caption to say what to do with them.
 - **Switch context by name.** `/sessions` shows a numbered list (`1. "Fix login bug" (ses_1638…)` ▶ marks current) and `/use 1` or `/use login` switches — no ID pasting.
-- **Approve from the couch.** Permission prompts arrive as pushes; `/allow <id>` / `/deny <id>`.
+- **Approve from the couch.** Permission prompts arrive as pushes with Allow once / Always / Deny buttons; `/allow <id>` / `/deny <id>` also works.
+- **Answer agent questions in chat.** When OpenCode asks a question, the gateway shows options as buttons or accepts a typed reply, then resumes the run.
 - **Change engine mid-chat.** `/model teamorouter/deepseek-v4-pro-free`, `/agent plan`.
 
 ### 🎛️ Interactive menus (inline keyboards)

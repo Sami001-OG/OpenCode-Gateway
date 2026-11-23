@@ -103,6 +103,9 @@ export function downloadTelegramFile(filePath, destAbs, timeoutMs = 120000) {
   const token = process.env.TELEGRAM_BOT_TOKEN ?? "";
   const lib = t.protocol === "http:" ? http : https;
   return buildAgent(t).then((agent) => new Promise((resolve, reject) => {
+    let done = false;
+    const cleanup = () => { try { fs.rmSync(destAbs, { force: true }); } catch {} };
+    const fail = (e) => { if (done) return; done = true; cleanup(); reject(e); };
     const opts = {
       hostname: t.hostname,
       port: t.port,
@@ -115,16 +118,17 @@ export function downloadTelegramFile(filePath, destAbs, timeoutMs = 120000) {
     const req = lib.request(opts, (res) => {
       if (res.statusCode !== 200) {
         res.resume();
-        reject(new Error(`file download http ${res.statusCode}`));
+        fail(new Error(`file download http ${res.statusCode}`));
         return;
       }
       const out = fs.createWriteStream(destAbs);
+      res.on("error", fail);
+      out.on("error", (e) => { res.destroy(e); fail(e); });
+      out.on("finish", () => { if (!done) { done = true; resolve(destAbs); } });
       res.pipe(out);
-      out.on("finish", () => resolve(destAbs));
-      out.on("error", reject);
     });
     req.on("timeout", () => req.destroy(new Error("file download timeout")));
-    req.on("error", reject);
+    req.on("error", fail);
     req.end();
   }));
 }

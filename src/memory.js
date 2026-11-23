@@ -28,6 +28,7 @@ export class Memory {
     if (!refs.length) return text;
     let out = text;
     for (const ref of refs.slice(0, 5)) {
+      if (ref.includes("..") || ref.startsWith("/")) continue;
       try {
         const content = await readFile(ref);
         out += `\n\n[@${ref}]\n${String(content).slice(0, MAX)}`;
