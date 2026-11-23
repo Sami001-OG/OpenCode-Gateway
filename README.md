@@ -175,6 +175,11 @@ Permission requests now arrive as a Telegram message with **✅ Allow once / ♾
   disable specific tool commands.
 - **Plugin mode** now supports both OpenCode v1 (`server()`) and v2 (`setup()`) entrypoints.
 
+All of the above are available as **`/` commands** and as buttons under **⏰ Automation**,
+**🧠 Memory** and **🔌 Platform** in `/menu`:
+`/schedule`, `/skills`, `/worktree`, `/remember`, `/memory`, `/checkpoint`, `/rollback`,
+`/stream`, `/inline`, `/groups`, `/voice`, `/webhook`, `/app`, `/policy`.
+
 ---
 
 ## 🧰 Command map

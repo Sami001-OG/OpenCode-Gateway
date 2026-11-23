@@ -248,7 +248,7 @@ test("interactive keyboards keep callback_data within Telegram's 64-byte limit",
   const stubService = { getModel: () => "x", getState: () => ({ sessionID: null }) };
   const ui = new TelegramUI(stubBot, stubService, () => "42");
   ui.get("42").lists.models = Array.from({ length: 25 }, (_, i) => ({ id: `p/m${i}`, name: `Model ${i}` }));
-  for (const menu of ["main", "models", "agents", "sessions", "providers", "commands", "tools", "system"]) {
+  for (const menu of ["main", "models", "agents", "sessions", "providers", "commands", "tools", "system", "automation", "memory", "platform"]) {
     const view = await ui.view("42", menu);
     for (const row of view.rows) {
       for (const button of row) {

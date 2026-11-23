@@ -82,6 +82,8 @@ const arg = (ctx) => String(ctx.message?.text ?? ctx.inlineQuery?.query ?? "").r
 // Interactive inline-keyboard UI (models, agents, sessions, permissions, …).
 // Registered after the auth middleware below, so buttons are gated too.
 const ui = new TelegramUI(bot, opencode, key);
+// Runtime features are attached after construction to avoid circular init.
+ui.features = {};
 
 // Telegram chat ids per user — needed to address streaming drafts.
 const chatIds = new Map();
@@ -99,6 +101,7 @@ scheduler.start();
 
 const memory = new Memory(process.cwd());
 const checkpoints = new Checkpoints(process.cwd());
+Object.assign(ui.features, { scheduler, memory, checkpoints, streaming });
 
 const HELP = `OpenCode gateway — dir: ${process.cwd()}
 
@@ -163,6 +166,7 @@ AUTOMATION
 /remember <fact> · /memory — persistent memory
 /checkpoint [label] · /rollback [id] — file snapshots
 Voice notes are transcribed; @file references inject file contents.
+/stream [on|off] · /inline · /groups · /voice · /webhook · /app · /policy
 `;
 
 function isAllowed(ctx) {
@@ -547,6 +551,36 @@ bot.command("rollback", (ctx) => {
   try { ctx.reply(`Restored ${checkpoints.restore(id)} files from ${id}`, threadExtra(ctx)); }
   catch (e) { ctx.reply(`Rollback failed: ${e.message}`, threadExtra(ctx)); }
 });
+
+// ----- platform / transport info + toggles -----
+bot.command("stream", (ctx) => {
+  const a = arg(ctx).toLowerCase();
+  if (a === "on" || a === "off") {
+    streaming.disabled = a === "off";
+    return ctx.reply(`Streaming ${a === "off" ? "disabled" : "enabled"} for this process.`, threadExtra(ctx));
+  }
+  ctx.reply(`Streaming is ${streaming.disabled ? "off" : "on"}. Use /stream on|off.`, threadExtra(ctx));
+});
+bot.command("inline", (ctx) => ctx.reply(
+  `Inline mode: type @${ctx.me?.username ?? "YourBot"} followed by a question in any Telegram chat.\n` +
+  `Enable it once with BotFather /setinline. Optional INLINE_MODEL and INLINE_TIMEOUT_MS.`, threadExtra(ctx)));
+bot.command("groups", (ctx) => ctx.reply(
+  `Groups: ${String(process.env.GROUPS_ENABLED ?? "true").toLowerCase() === "false" ? "disabled" : "enabled (mention activation)"}\n` +
+  `This chat: ${ctx.chat?.type ?? "?"}${threadId(ctx) ? ` · topic ${threadId(ctx)}` : ""}\n` +
+  `Sessions are isolated per user, chat and topic.`, threadExtra(ctx)));
+bot.command("voice", (ctx) => ctx.reply(
+  "Send a voice note and I'll download it and hand it to OpenCode for transcription/analysis. Voice files are attached with their original path.", threadExtra(ctx)));
+bot.command("webhook", (ctx) => ctx.reply(
+  String(process.env.TELEGRAM_WEBHOOK_ENABLED ?? "").toLowerCase() === "true"
+    ? `Webhook mode ON: ${process.env.TELEGRAM_WEBHOOK_URL ?? "(unset)"}`
+    : "Webhook mode OFF (long polling). Set TELEGRAM_WEBHOOK_ENABLED=true + TELEGRAM_WEBHOOK_URL to switch.", threadExtra(ctx)));
+bot.command("app", (ctx) => {
+  const url = process.env.TELEGRAM_MINIAPP_URL;
+  if (!url) return ctx.reply("No Mini App configured. Set TELEGRAM_MINIAPP_URL (public HTTPS URL).", threadExtra(ctx));
+  ctx.reply("Open the gateway Mini App:", Markup.inlineKeyboard([[Markup.button.webApp("🚀 Open App", url)]]));
+});
+bot.command("policy", (ctx) => ctx.reply(
+  `TOOL_POLICY_DENY: ${process.env.TOOL_POLICY_DENY || "(none)"}\nBlocked commands are refused before reaching the agent.`, threadExtra(ctx)));
 
 // ----- automation, skills and worktrees -----
 bot.command("schedule", async (ctx) => {

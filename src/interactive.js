@@ -32,10 +32,11 @@ export function normalizeProviders(data) {
 }
 
 export class TelegramUI {
-  constructor(bot, opencode, keyFn) {
+  constructor(bot, opencode, keyFn, features = {}) {
     this.bot = bot;
     this.opencode = opencode;
     this.key = keyFn;
+    this.features = features;
     this.state = new Map();
     this.permTokens = new Map(); // short token -> { userKey, permissionID }
     this.tokenSeq = 0;
@@ -92,7 +93,9 @@ export class TelegramUI {
             [btn("💬 Sessions", "nav:sessions"), btn("🧠 Models", "nav:models")],
             [btn("🤖 Agents", "nav:agents"), btn("🔧 Tools", "nav:tools")],
             [btn("⚙️ System", "nav:system"), btn("📋 Commands", "nav:commands")],
-            [btn("🌐 Providers", "nav:providers"), btn("❌ Close", "act:close")],
+            [btn("🌐 Providers", "nav:providers"), btn("⏰ Automation", "nav:automation")],
+            [btn("🧠 Memory", "nav:memory"), btn("🔌 Platform", "nav:platform")],
+            [btn("❌ Close", "act:close")],
             ...(process.env.TELEGRAM_MINIAPP_URL
               ? [[Markup.button.webApp("🚀 Open App", process.env.TELEGRAM_MINIAPP_URL)]] : []),
           ],
@@ -165,6 +168,35 @@ export class TelegramUI {
             [btn("🔌 MCP", "run:mcp"), btn("🔬 LSP", "run:lspstatus")],
             [btn("🛑 Abort", "act:abort"), btn("🗑 Unshare", "run:unshare")],
             [btn("« Main", "nav:main")],
+          ],
+        };
+      case "automation":
+        return {
+          text: "⏰ *Automation*",
+          rows: [
+            [btn("📋 List schedules", "run:schedule"), btn("⏱ Schedule 60m", "run:schedule60")],
+            [btn("🧩 Skills", "run:skills"), btn("🌳 Worktrees", "run:worktree")],
+            [btn("📌 Checkpoint", "run:checkpoint"), btn("↩ Rollback", "run:rollback")],
+            [btn("« Main", "nav:main")],
+          ],
+        };
+      case "memory":
+        return {
+          text: "🧠 *Memory* — persistent facts + @file references",
+          rows: [
+            [btn("📖 Show memory", "run:memory"), btn("✍️ Remember last", "run:remember")],
+            [btn("📸 Checkpoint", "run:checkpoint"), btn("↩ Rollback", "run:rollback")],
+            [btn("« Main", "nav:main")],
+          ],
+        };
+      case "platform":
+        return {
+          text: "🔌 *Platform*",
+          rows: [
+            [btn("🌊 Stream on/off", "run:stream"), btn("🔗 Inline help", "run:inline")],
+            [btn("👥 Groups", "run:groups"), btn("🎙 Voice", "run:voice")],
+            [btn("🪝 Webhook", "run:webhook"), btn("🚀 Mini App", "run:app")],
+            [btn("🛡 Tool policy", "run:policy"), btn("« Main", "nav:main")],
           ],
         };
       default:
@@ -354,6 +386,9 @@ export class TelegramUI {
 
   async run(ctx, command) {
     const k = this.key(ctx);
+    const [scheduler, memory, checkpoints, streaming] = [
+      this.features.scheduler, this.features.memory, this.features.checkpoints, this.features.streaming,
+    ];
     const out = {
       status: () => `dir: ${process.cwd()}\nsession: ${this.opencode.getState(k).sessionID ?? "none"}\nmodel: ${this.opencode.getModel(k)}`,
       health: async () => JSON.stringify(await this.opencode.health()),
@@ -362,8 +397,40 @@ export class TelegramUI {
       mcp: async () => JSON.stringify(await this.opencode.mcpStatus()),
       lspstatus: async () => JSON.stringify(await this.opencode.lspStatus()),
       unshare: async () => JSON.stringify(await this.opencode.unshareSession(k)),
+      schedule: () => scheduler?.list().length
+        ? scheduler.list().map((j) => `• ${j.id} — every ${j.everyMinutes}m — ${j.prompt}`).join("\n")
+        : "No scheduled jobs. Use /schedule <minutes> :: <prompt>",
+      schedule60: () => scheduler ? `Scheduled a 60m job. Use /schedule 60 :: <prompt> to give it a task.` : "Scheduler unavailable",
+      skills: async () => (await this.opencode.listSkills()).map((s) => `• /${s.name} — ${s.description}`).join("\n") || "(no skills)",
+      worktree: async () => (await this.opencode.listWorktrees()).join("\n") || "(no worktrees)",
+      memory: () => memory?.load() || "(empty)",
+      remember: () => "Use /remember <fact> in chat to store a memory.",
+      checkpoint: () => checkpoints ? `Checkpoint ${checkpoints.create("menu")}` : "Unavailable",
+      rollback: () => {
+        const id = checkpoints?.list().sort().slice(-1)[0];
+        if (!id) return "No checkpoints";
+        try { return `Restored ${checkpoints.restore(id)} files`; } catch (e) { return e.message; }
+      },
+      stream: () => {
+        if (!streaming) return "Unavailable";
+        streaming.disabled = !streaming.disabled;
+        return `Streaming ${streaming.disabled ? "off" : "on"}`;
+      },
+      inline: () => "Type @YourBot then a question in any chat (enable with BotFather /setinline).",
+      groups: () => `Groups: ${String(process.env.GROUPS_ENABLED ?? "true").toLowerCase() === "false" ? "off" : "on (mention activation)"}`,
+      voice: () => "Send a voice note — OpenCode will transcribe/analyse it.",
+      webhook: () => String(process.env.TELEGRAM_WEBHOOK_ENABLED ?? "").toLowerCase() === "true"
+        ? `Webhook ON: ${process.env.TELEGRAM_WEBHOOK_URL}` : "Webhook OFF (long polling)",
+      app: () => process.env.TELEGRAM_MINIAPP_URL ? `Mini App: ${process.env.TELEGRAM_MINIAPP_URL}` : "No TELEGRAM_MINIAPP_URL configured",
+      policy: () => `TOOL_POLICY_DENY: ${process.env.TOOL_POLICY_DENY || "(none)"}`,
     }[command];
-    const text = out ? String(await out()).slice(0, 3500) : "Unknown action";
-    await ctx.editMessageText(text, kb([[btn("⚙️ System", "nav:system"), btn("« Main", "nav:main")]]));
+    let text = "Unknown action";
+    try { text = out ? String(await out()).slice(0, 3500) : text; }
+    catch (e) { text = `Error: ${String(e.message).slice(0, 300)}`; }
+    const back = ["schedule", "schedule60", "skills", "worktree", "checkpoint", "rollback"].includes(command)
+      ? "automation" : ["memory", "remember"].includes(command)
+      ? "memory" : ["stream", "inline", "groups", "voice", "webhook", "app", "policy"].includes(command)
+      ? "platform" : "system";
+    await ctx.editMessageText(text, kb([[btn("« Back", `nav:${back}`), btn("« Main", "nav:main")]]));
   }
 }
