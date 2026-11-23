@@ -33,6 +33,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   runs it in addition to syntax checks.
 
 ### Added
+- **Chat-initiated restart**: `/restart` (and the 🔌 Platform menu button) cleanly closes
+  the OpenCode server, clears the pidfile, relaunches the detached daemon and exits.
 - **OpenClaw/Hermes-inspired feature merge**: native `sendMessageDraft` streaming with
   Stop button, Telegram inline mode, group mention activation + per-topic sessions,
   voice-note intake, persistent memory with `@file` references, `/checkpoint`/`/rollback`,

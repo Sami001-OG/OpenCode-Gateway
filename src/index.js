@@ -13,6 +13,7 @@ import { Streaming } from "./streaming.js";
 import { Scheduler } from "./automation.js";
 import { Memory } from "./memory.js";
 import { Checkpoints } from "./checkpoints.js";
+import { scheduleRestart } from "./restart.js";
 
 const {
   TELEGRAM_BOT_TOKEN = "",
@@ -101,7 +102,10 @@ scheduler.start();
 
 const memory = new Memory(process.cwd());
 const checkpoints = new Checkpoints(process.cwd());
-Object.assign(ui.features, { scheduler, memory, checkpoints, streaming });
+Object.assign(ui.features, {
+  scheduler, memory, checkpoints, streaming,
+  restart: () => scheduleRestart(process.cwd(), opencode),
+});
 
 const HELP = `OpenCode gateway — dir: ${process.cwd()}
 
@@ -167,6 +171,7 @@ AUTOMATION
 /checkpoint [label] · /rollback [id] — file snapshots
 Voice notes are transcribed; @file references inject file contents.
 /stream [on|off] · /inline · /groups · /voice · /webhook · /app · /policy
+/restart — restart the gateway daemon (reconnect in a few seconds)
 `;
 
 function isAllowed(ctx) {
@@ -550,6 +555,13 @@ bot.command("rollback", (ctx) => {
   if (!id) return ctx.reply("No checkpoints.", threadExtra(ctx));
   try { ctx.reply(`Restored ${checkpoints.restore(id)} files from ${id}`, threadExtra(ctx)); }
   catch (e) { ctx.reply(`Rollback failed: ${e.message}`, threadExtra(ctx)); }
+});
+
+bot.command("restart", (ctx) => {
+  const reply = ctx.reply("🔄 Restarting gateway… (reconnect in a few seconds)", threadExtra(ctx));
+  Promise.resolve(reply)
+    .catch(() => {})
+    .finally(() => scheduleRestart(process.cwd(), opencode));
 });
 
 // ----- platform / transport info + toggles -----

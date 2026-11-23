@@ -196,7 +196,8 @@ export class TelegramUI {
             [btn("🌊 Stream on/off", "run:stream"), btn("🔗 Inline help", "run:inline")],
             [btn("👥 Groups", "run:groups"), btn("🎙 Voice", "run:voice")],
             [btn("🪝 Webhook", "run:webhook"), btn("🚀 Mini App", "run:app")],
-            [btn("🛡 Tool policy", "run:policy"), btn("« Main", "nav:main")],
+            [btn("🛡 Tool policy", "run:policy"), btn("🔄 Restart", "run:restart")],
+            [btn("« Main", "nav:main")],
           ],
         };
       default:
@@ -423,6 +424,10 @@ export class TelegramUI {
         ? `Webhook ON: ${process.env.TELEGRAM_WEBHOOK_URL}` : "Webhook OFF (long polling)",
       app: () => process.env.TELEGRAM_MINIAPP_URL ? `Mini App: ${process.env.TELEGRAM_MINIAPP_URL}` : "No TELEGRAM_MINIAPP_URL configured",
       policy: () => `TOOL_POLICY_DENY: ${process.env.TOOL_POLICY_DENY || "(none)"}`,
+      restart: () => {
+        setTimeout(() => this.features.restart?.(), 300);
+        return "🔄 Restarting gateway… reconnect in a few seconds.";
+      },
     }[command];
     let text = "Unknown action";
     try { text = out ? String(await out()).slice(0, 3500) : text; }

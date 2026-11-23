@@ -18,6 +18,7 @@ export const COMMANDS = [
   ["webhook", "Show webhook mode status"],
   ["app", "Open the Mini App (if configured)"],
   ["policy", "Show disabled tools (TOOL_POLICY_DENY)"],
+  ["restart", "Restart the gateway daemon"],
   ["status", "Session, model, dir"],
   ["new", "Fresh session (resets context)"],
   ["sessions", "Sessions by name"],

@@ -13,6 +13,7 @@ import { TelegramUI, normalizeProviders } from "../src/interactive.js";
 import { Memory } from "../src/memory.js";
 import { Checkpoints } from "../src/checkpoints.js";
 import { Scheduler } from "../src/automation.js";
+import { scheduleRestart } from "../src/restart.js";
 
 const user = "42";
 const sid = "ses_x";
@@ -307,6 +308,10 @@ test("scheduler stores, ticks and removes jobs", async () => {
     assert.ok(s.remove(job.id));
     assert.equal(s.list().length, 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("chat restart helper is available", () => {
+  assert.equal(typeof scheduleRestart, "function");
 });
 
 test("canonical Telegram menu stays in sync with registered handlers", () => {
