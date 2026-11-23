@@ -299,5 +299,6 @@ export async function createTransport({ serverUrl = "", hostname = "127.0.0.1", 
   const { createOpencodeClient } = await import("@opencode-ai/sdk");
   const real = createOpencodeClient({ baseUrl, ...(headers ? { headers } : {}) });
   const client = mode === "v2" ? wrap(real, v2Overrides(baseUrl, headers)) : real;
-  return { mode, client, close, url, password };
+  const raw = (p, opts) => rawFetch(baseUrl, headers, p, opts);
+  return { mode, client, close, url, password, raw };
 }

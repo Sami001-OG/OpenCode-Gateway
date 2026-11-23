@@ -93,6 +93,8 @@ export class TelegramUI {
             [btn("🤖 Agents", "nav:agents"), btn("🔧 Tools", "nav:tools")],
             [btn("⚙️ System", "nav:system"), btn("📋 Commands", "nav:commands")],
             [btn("🌐 Providers", "nav:providers"), btn("❌ Close", "act:close")],
+            ...(process.env.TELEGRAM_MINIAPP_URL
+              ? [[Markup.button.webApp("🚀 Open App", process.env.TELEGRAM_MINIAPP_URL)]] : []),
           ],
         };
       case "models": {
@@ -143,10 +145,12 @@ export class TelegramUI {
       }
       case "tools": {
         const rows = [];
-        for (let i = 0; i < BUILTIN_TOOLS.length; i += 2) {
+        const denied = new Set((process.env.TOOL_POLICY_DENY || "").split(",").map((x) => x.trim()));
+        const entries = BUILTIN_TOOLS.map((t, i) => ({ t, i })).filter((x) => !denied.has(x.t));
+        for (let j = 0; j < entries.length; j += 2) {
           rows.push([
-            btn(BUILTIN_TOOLS[i], `hint:tool:${i}`),
-            ...(BUILTIN_TOOLS[i + 1] ? [btn(BUILTIN_TOOLS[i + 1], `hint:tool:${i + 1}`)] : []),
+            btn(entries[j].t, `hint:tool:${entries[j].i}`),
+            ...(entries[j + 1] ? [btn(entries[j + 1].t, `hint:tool:${entries[j + 1].i}`)] : []),
           ]);
         }
         rows.push([btn("« Main", "nav:main")]);

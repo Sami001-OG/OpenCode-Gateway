@@ -152,9 +152,28 @@ Send `/menu` (or `/start`) to open a button-driven UI — no typing needed:
 | 📋 Commands | OpenCode slash commands listed with descriptions |
 | ⚙️ System | Status, health, stats, config, MCP, LSP, unshare, abort — all as buttons |
 
-Permission requests now arrive as a Telegram message with **✅ Allow once / ❌ Deny**
-buttons, so you never have to type an ID. All callback buttons are gated by
+Permission requests now arrive as a Telegram message with **✅ Allow once / ♾ Always /
+❌ Deny** buttons, so you never have to type an ID. All callback buttons are gated by
 `ALLOWED_USER_IDS`, and callback payloads stay under Telegram's 64-byte limit.
+
+### 🚀 Streaming, groups, automation & memory
+
+- **Native streaming**: answers stream into Telegram's draft UI via `sendMessageDraft`
+  with a real **Stop** button (`TELEGRAM_STREAM=false` to disable). Falls back to the
+  edit-spinner on older clients.
+- **Inline mode**: `@YourBot <question>` answers you anywhere in Telegram (enable with
+  BotFather `/setinline`; optional `INLINE_MODEL`, `INLINE_TIMEOUT_MS`).
+- **Groups + topics**: mention-activated group chats (`GROUPS_ENABLED=false` to opt out),
+  per-chat/per-thread session isolation, and replies routed back to the right topic.
+- **Voice notes** are downloaded and handed to the agent; `@file.ext` references inject
+  workspace file contents; `/remember` + `/memory` give persistent memory.
+- **Checkpoints**: `/checkpoint`, `/rollback` (or `CHECKPOINT_ON_PROMPT=true`).
+- **Automation**: `/schedule 60 :: prompt` recurring jobs, `/skills` catalog (v2),
+  `/worktree` management (v2).
+- **Webhook mode** (`TELEGRAM_WEBHOOK_ENABLED=true`) as an alternative to long polling,
+  optional **Mini App** button (`TELEGRAM_MINIAPP_URL`), and `TOOL_POLICY_DENY` to
+  disable specific tool commands.
+- **Plugin mode** now supports both OpenCode v1 (`server()`) and v2 (`setup()`) entrypoints.
 
 ---
 

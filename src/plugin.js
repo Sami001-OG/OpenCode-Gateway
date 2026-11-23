@@ -72,6 +72,40 @@ async function sendTelegram(text) {
   ));
 }
 
+async function v2Setup(ctx) {
+  const want = (process.env.TELEGRAM_NOTIFY_ON || DEFAULT_EVENTS.join(","))
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  const controller = new AbortController();
+  if (ctx.event?.subscribe) {
+    (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (!want.includes(event.type)) continue;
+          const props = event.properties ?? event.data ?? {};
+          await sendTelegram(`${event.type}\n${JSON.stringify(props).slice(0, 2000)}`);
+        }
+      } catch {}
+    })();
+  }
+  // v2 registers tools through ctx.tool.transform (JSON Schema + { content }).
+  ctx.tool?.transform?.((e) => e.add({
+    name: "telegram_send",
+    input: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    async execute(input) {
+      await sendTelegram(input.text);
+      return { content: [{ type: "text", text: "sent" }] };
+    },
+  }));
+  return () => controller.abort();
+}
+
+// One package serves both generations: v2 calls setup(), v1 calls server().
+export default {
+  id: "opencode-telegram-gateway",
+  setup: v2Setup,
+  server: () => TelegramGatewayPlugin({}),
+};
+
 export const TelegramGatewayPlugin = async (ctx) => {
   const want = (process.env.TELEGRAM_NOTIFY_ON || DEFAULT_EVENTS.join(","))
     .split(",").map((s) => s.trim()).filter(Boolean);

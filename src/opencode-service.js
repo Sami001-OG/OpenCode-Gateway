@@ -133,6 +133,7 @@ export class OpencodeService {
     this.eventHandlers = new Set();
     this.sessionUser = new Map(); // sessionID -> userKey (for live activity)
     this.activity = new Map(); // userKey -> { text, at }
+    this.textHandlers = new Set(); // streaming text-delta subscribers
   }
 
   async init({ serverUrl = "", hostname = "127.0.0.1", port = 4096, timeout = 60000 } = {}) {
@@ -194,6 +195,14 @@ export class OpencodeService {
     if (t === "message.part.updated" && p.part?.type === "tool") {
       const u = this.sessionUser.get(p.part.sessionID);
       if (u) this.setActivity(u, TOOL_LABELS[p.part.tool] ?? `🔧 using ${p.part.tool}…`);
+    } else if (t === "message.part.updated" && p.part?.type === "text") {
+      // Cumulative text — feed streaming drafts (v1 part.text, v2 content blocks).
+      const text = p.part?.text ?? (Array.isArray(p.part?.content)
+        ? p.part.content.filter((c) => c?.type === "text").map((c) => c.text).join("") : "");
+      const u = this.sessionUser.get(p.part.sessionID ?? p.sessionID);
+      if (u && typeof text === "string") {
+        for (const fn of this.textHandlers) { try { fn(u, text); } catch {} }
+      }
     } else if (t === "message.updated" && p.info?.role === "assistant") {
       const u = this.sessionUser.get(p.info?.sessionID);
       if (u) this.setActivity(u, THINKING);
@@ -356,6 +365,21 @@ export class OpencodeService {
     }
   }
 
+  // Lightweight, stateless prompt used by Telegram inline mode.
+  async inlinePrompt(text, { timeoutMs = 8000 } = {}) {
+    const k = "inline:" + Date.now();
+    const sessionID = await this.newSession(k, "inline");
+    const model = parseModel(process.env.INLINE_MODEL ?? "");
+    const body = { parts: [{ type: "text", text: `Answer briefly (max 60 words):\n${text}` }] };
+    if (model) body.model = model;
+    try {
+      return await this.sendAndWait(k, sessionID, body, { pollMs: 500, timeoutMs });
+    } finally {
+      this.sessions.delete(k);
+      this.sessionUser.delete(sessionID);
+    }
+  }
+
   // ---------- explicit single-tool shortcuts ----------
   // Mutating tools go THROUGH the agent so opencode permissions/hooks/audit
   // behave exactly like the CLI. Read-only tools hit the API directly.
@@ -511,6 +535,29 @@ export class OpencodeService {
     }));
   }
 
+  // ---------- v2-only catalogs (skills, worktrees) ----------
+  async listSkills() {
+    if (this.apiMode !== "v2" || !this.transport?.raw) throw new Error("/skills is only available on OpenCode v2 servers");
+    const r = await this.transport.raw("/skill");
+    const arr = Array.isArray(r?.data) ? r.data : [];
+    return arr.map((s) => ({ name: s.name ?? s.id, description: s.description ?? "", slash: s.slash }));
+  }
+  async listWorktrees() {
+    if (this.apiMode !== "v2" || !this.transport?.raw) throw new Error("/worktree is only available on OpenCode v2 servers");
+    const r = await this.transport.raw("/experimental/worktree");
+    return Array.isArray(r?.data) ? r.data : [];
+  }
+  async createWorktree(name) {
+    if (this.apiMode !== "v2" || !this.transport?.raw) throw new Error("/worktree is only available on OpenCode v2 servers");
+    const r = await this.transport.raw("/experimental/worktree", { method: "POST", body: { name } });
+    return r?.data ?? {};
+  }
+  async removeWorktree(directory) {
+    if (this.apiMode !== "v2" || !this.transport?.raw) throw new Error("/worktree is only available on OpenCode v2 servers");
+    await this.transport.raw("/experimental/worktree", { method: "DELETE", body: { directory } });
+    return true;
+  }
+
   // ---------- catalog (models/providers/agents/commands/mcp/lsp) ----------
   async listModels() { return unwrap(await this.client.config.providers()); }
   async listAgents() { return unwrap(await this.client.app.agents()); }
@@ -555,6 +602,7 @@ export class OpencodeService {
   // forever with backoff instead of dying silently (which used to kill the
   // activity feed and permission pushes mid-task).
   onEvent(fn) { this.eventHandlers.add(fn); return () => this.eventHandlers.delete(fn); }
+  onTextDelta(fn) { this.textHandlers.add(fn); return () => this.textHandlers.delete(fn); }
   async subscribeEvents(signal) {
     (async () => {
       let attempt = 0;

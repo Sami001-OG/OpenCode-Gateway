@@ -9,6 +9,10 @@ import { Telegraf, Markup } from "telegraf";
 import { BUILTIN_TOOLS, OpencodeService, errorMessage } from "./opencode-service.js";
 import { createTelegramAgent, downloadTelegramFile, telegramApi, apiTarget } from "./net.js";
 import { TelegramUI } from "./interactive.js";
+import { Streaming } from "./streaming.js";
+import { Scheduler } from "./automation.js";
+import { Memory } from "./memory.js";
+import { Checkpoints } from "./checkpoints.js";
 
 const {
   TELEGRAM_BOT_TOKEN = "",
@@ -69,12 +73,32 @@ const bot = new Telegraf(TELEGRAM_BOT_TOKEN, {
     ...(telegramAgent ? { agent: telegramAgent } : {}),
   },
 });
-const key = (ctx) => String(ctx.from.id);
-const arg = (ctx) => ctx.message.text.replace(/^\/\w+(@\w+)?\s*/, "").trim();
+const threadId = (ctx) => ctx.message?.message_thread_id ?? ctx.callbackQuery?.message?.message_thread_id ?? 0;
+// Conversations are isolated per user, chat and topic (private topics supported).
+const key = (ctx) => `${ctx.from.id}:${ctx.chat?.id ?? "private"}:${threadId(ctx)}`;
+const threadExtra = (ctx) => threadId(ctx) ? { message_thread_id: threadId(ctx) } : {};
+const arg = (ctx) => String(ctx.message?.text ?? ctx.inlineQuery?.query ?? "").replace(/^\/\w+(@\w+)?\s*/, "").trim();
 
 // Interactive inline-keyboard UI (models, agents, sessions, permissions, …).
 // Registered after the auth middleware below, so buttons are gated too.
 const ui = new TelegramUI(bot, opencode, key);
+
+// Telegram chat ids per user — needed to address streaming drafts.
+const chatIds = new Map();
+const threadIds = new Map();
+const streaming = new Streaming(bot, opencode, (k) => chatIds.get(k));
+streaming.register();
+
+const scheduler = new Scheduler(
+  process.cwd(),
+  (prompt) => opencode.prompt("schedule", prompt),
+  (job, text) => bot.telegram.sendMessage(job.chatId, String(text).slice(0, 4000),
+    job.threadId ? { message_thread_id: job.threadId } : undefined)
+);
+scheduler.start();
+
+const memory = new Memory(process.cwd());
+const checkpoints = new Checkpoints(process.cwd());
 
 const HELP = `OpenCode gateway — dir: ${process.cwd()}
 
@@ -131,6 +155,14 @@ RAW CLI (full parity)
 /shell <cmd> — session shell (logged in transcript)
 /run <prompt> — one-shot non-interactive run
 /export [id] — export session JSON
+
+AUTOMATION
+/schedule <minutes> :: <prompt> — recurring job (list/rm via /schedule, /schedule rm <id>)
+/skills — list OpenCode skills (v2)
+/worktree [new|rm] — manage v2 worktrees
+/remember <fact> · /memory — persistent memory
+/checkpoint [label] · /rollback [id] — file snapshots
+Voice notes are transcribed; @file references inject file contents.
 `;
 
 function isAllowed(ctx) {
@@ -153,7 +185,7 @@ function chunk(text, size = 4000) {
 }
 
 async function replyLong(ctx, text) {
-  for (const part of chunk(text)) await tgCall(() => ctx.reply(part));
+  for (const part of chunk(text)) await tgCall(() => ctx.reply(part, threadExtra(ctx)));
 }
 
 // Telegram calls fail transiently on flaky routes (VPN flaps, throttled DCs).
@@ -192,8 +224,9 @@ async function runAndReply(ctx, label, fn) {
   let working = null;
   const keepers = [];
   try {
+    await streaming.begin(key(ctx));
     await tgCall(() => ctx.sendChatAction("typing")).catch(() => {});
-    working = await tgCall(() => ctx.reply(`${label}… (/abort to stop)`));
+    working = await tgCall(() => ctx.reply(`${label}… (/abort to stop)`, threadExtra(ctx)));
     keepers.push(setInterval(() => ctx.sendChatAction("typing").catch(() => {}), 4500));
     // Live activity: rewrite the temp message as the harness switches tools
     // (thinking -> grep -> edit -> ...). Throttled to respect Telegram limits.
@@ -216,12 +249,38 @@ async function runAndReply(ctx, label, fn) {
     await tgCall(() => ctx.reply(`Error: ${e.message}`.slice(0, 4000))).catch(() => {});
   } finally {
     for (const t of keepers) clearInterval(t);
+    streaming.clear(key(ctx));
     try { opencode.clearActivity(key(ctx)); } catch {}
   }
 }
 
+// Tool policy: block explicit tool commands listed in TOOL_POLICY_DENY.
+const deniedTools = new Set((process.env.TOOL_POLICY_DENY || "").split(",").map((s) => s.trim()).filter(Boolean));
+bot.use(async (ctx, next) => {
+  const cmd = String(ctx.message?.text ?? "").match(/^\/([A-Za-z_]+)/)?.[1];
+  if (cmd && deniedTools.has(cmd)) {
+    await ctx.reply(`Tool /${cmd} is disabled by TOOL_POLICY_DENY.`, threadExtra(ctx));
+    return;
+  }
+  return next();
+});
+
 bot.use(async (ctx, next) => {
   if (!ctx.from) return;
+  if (ctx.chat?.id) {
+    chatIds.set(String(ctx.from.id), ctx.chat.id);
+    threadIds.set(String(ctx.from.id), threadId(ctx));
+  }
+  // Group chats: mention-based activation (mirrors OpenClaw/Hermes), unless
+  // explicitly disabled. Commands and direct replies still work.
+  if (ctx.chat?.type && ctx.chat.type !== "private") {
+    if (String(process.env.GROUPS_ENABLED ?? "true").toLowerCase() === "false") return;
+    const text = String(ctx.message?.text ?? ctx.message?.caption ?? "");
+    const mentioned = ctx.me?.username
+      ? text.toLowerCase().includes(`@${ctx.me.username.toLowerCase()}`)
+      : (ctx.message?.entities ?? []).some((e) => e.type === "mention");
+    if (!mentioned && !/^\//.test(text)) return;
+  }
   if (!isAllowed(ctx)) {
     // Log sender ID so the owner can add it to ALLOWED_USER_IDS
     console.log(`[auth] unauthorized message from id=${ctx.from.id} username=@${ctx.from.username ?? "?"} text=${String(ctx.message?.text ?? "").slice(0, 80)}`);
@@ -471,10 +530,91 @@ bot.command("deny", async (ctx) => {
   await runAndReply(ctx, "Denying", async () => fmtJson(await opencode.answerPermission(key(ctx), id, "deny")));
 });
 
+// ----- memory and checkpoints -----
+bot.command("remember", (ctx) => {
+  const a = arg(ctx);
+  if (!a) return ctx.reply("Usage: /remember <fact>", threadExtra(ctx));
+  ctx.reply("Remembered: " + memory.remember(a), threadExtra(ctx));
+});
+bot.command("memory", (ctx) => ctx.reply(memory.load() || "(empty)", threadExtra(ctx)));
+bot.command("checkpoint", (ctx) => {
+  const id = checkpoints.create(arg(ctx) || "manual");
+  ctx.reply(`Checkpoint ${id} (${checkpoints.list().length} total)`, threadExtra(ctx));
+});
+bot.command("rollback", (ctx) => {
+  const id = arg(ctx) || checkpoints.list().sort().slice(-1)[0];
+  if (!id) return ctx.reply("No checkpoints.", threadExtra(ctx));
+  try { ctx.reply(`Restored ${checkpoints.restore(id)} files from ${id}`, threadExtra(ctx)); }
+  catch (e) { ctx.reply(`Rollback failed: ${e.message}`, threadExtra(ctx)); }
+});
+
+// ----- automation, skills and worktrees -----
+bot.command("schedule", async (ctx) => {
+  const a = arg(ctx);
+  if (!a) {
+    const jobs = scheduler.list();
+    return ctx.reply(jobs.length
+      ? jobs.map((j) => `• ${j.id} — every ${j.everyMinutes}m — ${j.prompt}`).join("\n")
+      : "No scheduled jobs. Usage: /schedule <minutes> :: <prompt>, or /schedule rm <id>", threadExtra(ctx));
+  }
+  if (a.startsWith("rm ")) {
+    const id = a.slice(3).trim();
+    return ctx.reply(scheduler.remove(id) ? `Removed ${id}` : `No job ${id}`, threadExtra(ctx));
+  }
+  const m = a.match(/^(\d+)\s*::\s*(.+)$/);
+  if (!m) return ctx.reply("Usage: /schedule <minutes> :: <prompt>", threadExtra(ctx));
+  const job = scheduler.add(m[2], Number(m[1]), ctx.chat?.id, threadId(ctx));
+  await ctx.reply(`Scheduled ${job.id} every ${job.everyMinutes}m. /schedule to list, /schedule rm ${job.id} to remove.`, threadExtra(ctx));
+});
+
+bot.command("skills", async (ctx) => {
+  await runAndReply(ctx, "Skills", async () => {
+    const list = await opencode.listSkills();
+    return list.length ? list.map((s) => `• /${s.name} — ${s.description}`).join("\n").slice(0, 3800) : "(no skills)";
+  });
+});
+
+bot.command("worktree", async (ctx) => {
+  await runAndReply(ctx, "Worktrees", async () => {
+    const a = arg(ctx);
+    if (a.startsWith("new ")) return "Created: " + JSON.stringify(await opencode.createWorktree(a.slice(4).trim()));
+    if (a.startsWith("rm ")) return "Removed: " + String(await opencode.removeWorktree(a.slice(3).trim()));
+    return (await opencode.listWorktrees()).join("\n") || "(no worktrees)";
+  });
+});
+
+// ----- inline mode: @bot <query> from any chat -----
+bot.on("inline_query", async (ctx) => {
+  const q = String(ctx.inlineQuery?.query ?? "").trim();
+  if (!isAllowed(ctx)) return ctx.answerInlineQuery([], { cache_time: 0 });
+  if (!q) {
+    return ctx.answerInlineQuery([{
+      type: "article", id: "hint", title: "OpenCode inline",
+      input_message_content: { message_text: "Type a prompt after @your_bot — requires /setinline in BotFather." },
+    }], { cache_time: 0 });
+  }
+  try {
+    const text = await opencode.inlinePrompt(q, { timeoutMs: Number(process.env.INLINE_TIMEOUT_MS || 8000) });
+    await ctx.answerInlineQuery([{
+      type: "article", id: String(ctx.inlineQuery.id), title: "OpenCode answer",
+      description: String(text).slice(0, 100),
+      input_message_content: { message_text: String(text).slice(0, 4096) },
+    }], { cache_time: 0, is_personal: true });
+  } catch {
+    await ctx.answerInlineQuery([{
+      type: "article", id: "err", title: "OpenCode unavailable",
+      input_message_content: { message_text: "OpenCode is busy — try again in a moment." },
+    }], { cache_time: 0 });
+  }
+});
+
 // ----- plain chat = full agent with every tool -----
 bot.on("text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
-  await runAndReply(ctx, "Working", async () => opencode.prompt(key(ctx), ctx.message.text));
+  const withRefs = await memory.expand(ctx.message.text, (p) => opencode.readFile(p));
+  const withMemory = withRefs + memory.context();
+  if (String(process.env.CHECKPOINT_ON_PROMPT ?? "").toLowerCase() === "true") checkpoints.create("auto");
+  await runAndReply(ctx, "Working", async () => opencode.prompt(key(ctx), withMemory));
 });
 
 // ----- photos & documents: download -> attach to session -----
@@ -525,6 +665,17 @@ bot.on("photo", async (ctx) => {
   });
 });
 
+bot.on("voice", async (ctx) => {
+  const v = ctx.message.voice;
+  if (!v) return;
+  await runAndReply(ctx, "Receiving voice note", async () => {
+    const { dest, text } = await receiveFile(v.file_id, "voice.ogg", ctx.message.caption);
+    return opencode.promptWithFiles(key(ctx), `Transcribe or analyse this voice note: ${text}`, [{
+      mime: "audio/ogg", url: pathToFileURL(dest).href, filename: path.basename(dest),
+    }]);
+  });
+});
+
 bot.on("document", async (ctx) => {
   const doc = ctx.message.document;
   if (!doc) return;
@@ -564,13 +715,13 @@ opencode.onEvent(async (event) => {
       const detail = errorMessage(props.request ?? props.message ?? "");
       const text = `Permission needed (${String(sessionID).slice(0, 12)}…): ${tool} ${detail}\n/allow ${pid} or /deny ${pid}`;
       const keyboard = ui.permissionKeyboard(pid, ownerIds);
-      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text, keyboard)).catch(() => {});
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(chatIds.get(id) ?? id, text, { ...(threadIds.get(id) ? { message_thread_id: threadIds.get(id) } : {}), reply_markup: keyboard.reply_markup })).catch(() => {});
     } else if (/question\.(asked|v2\.asked)/.test(type)) {
       const text = `❓ OpenCode has a question:\n${errorMessage(props.question ?? props.text ?? props)}`;
-      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(chatIds.get(id) ?? id, text, threadIds.get(id) ? { message_thread_id: threadIds.get(id) } : undefined)).catch(() => {});
     } else if (type === "session.error") {
       const text = `OpenCode error (${String(props.sessionID ?? "").slice(0, 16)}…): ${errorMessage(props.error)}`;
-      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(id, text)).catch(() => {});
+      for (const id of ownerIds) await tgCall(() => bot.telegram.sendMessage(chatIds.get(id) ?? id, text, threadIds.get(id) ? { message_thread_id: threadIds.get(id) } : undefined)).catch(() => {});
     }
   } catch {}
 });
@@ -622,8 +773,27 @@ async function launchWithRetry(attempt = 1) {
     // Telegraf's launch() promise lives as long as long polling does — it does
     // NOT resolve on success. Report online once polling has been started, and
     // only use the rejection path for real failures.
-    bot.launch().catch(onFailure);
-    console.log(`[telegram] gateway online in ${bootSecs()}. Send /start in Telegram.`);
+    if (String(process.env.TELEGRAM_WEBHOOK_ENABLED ?? "").toLowerCase() === "true") {
+      const domain = process.env.TELEGRAM_WEBHOOK_URL ?? "";
+      if (!domain) throw new Error("TELEGRAM_WEBHOOK_URL is required for webhook mode");
+      const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || undefined;
+      await tgCall(() => bot.telegram.setWebhook(domain, {
+        secret_token: secretToken, drop_pending_updates: true,
+      }));
+      bot.launch({
+        webhook: {
+          domain,
+          path: new URL(domain).pathname || "/",
+          host: process.env.TELEGRAM_WEBHOOK_HOST || "0.0.0.0",
+          port: Number(process.env.TELEGRAM_WEBHOOK_PORT || 8443),
+          secretToken,
+        },
+      }).catch(onFailure);
+      console.log(`[telegram] webhook gateway online in ${bootSecs()} at ${domain}`);
+    } else {
+      bot.launch().catch(onFailure);
+      console.log(`[telegram] gateway online in ${bootSecs()}. Send /start in Telegram.`);
+    }
   } catch (e) {
     onFailure(e);
   }

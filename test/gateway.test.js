@@ -3,11 +3,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import http from "node:http";
 import { OpencodeService, quoteWindowsArg, parseModel } from "../src/opencode-service.js";
 import { COMMANDS } from "../src/commands.js";
 import { isTermux, authHeaders, normalizeMessage, createTransport } from "../src/transport.js";
 import { TelegramUI, normalizeProviders } from "../src/interactive.js";
+import { Memory } from "../src/memory.js";
+import { Checkpoints } from "../src/checkpoints.js";
+import { Scheduler } from "../src/automation.js";
 
 const user = "42";
 const sid = "ses_x";
@@ -260,6 +265,48 @@ test("provider normalization understands v1 and v2 shapes", () => {
   assert.equal(v1[0].models[0].name, "Claude");
   const v2 = normalizeProviders({ data: [{ id: "opencode", models: [{ id: "m1", name: "M1" }] }] });
   assert.equal(v2[0].models[0].id, "m1");
+});
+
+test("memory persists facts and expands @file references", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-mem-"));
+  try {
+    const m = new Memory(dir);
+    m.remember("prefers dark mode");
+    assert.match(m.load(), /prefers dark mode/);
+    assert.match(m.context(), /Persistent memory/);
+    const out = await m.expand("check @src/app.js", async (p) => {
+      assert.equal(p, "src/app.js"); return "FILE CONTENT";
+    });
+    assert.match(out, /FILE CONTENT/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("checkpoints snapshot and restore files", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-cp-"));
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "original");
+    const cp = new Checkpoints(dir);
+    const id = cp.create("test");
+    fs.writeFileSync(path.join(dir, "a.txt"), "changed");
+    assert.equal(fs.readFileSync(path.join(dir, "a.txt"), "utf8"), "changed");
+    cp.restore(id);
+    assert.equal(fs.readFileSync(path.join(dir, "a.txt"), "utf8"), "original");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("scheduler stores, ticks and removes jobs", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gw-sch-"));
+  try {
+    let delivered = "";
+    const s = new Scheduler(dir, async (p) => `ran ${p}`, async (_j, text) => { delivered = text; });
+    const job = s.add("check build", 5, 123);
+    assert.equal(s.list().length, 1);
+    job.nextAt = Date.now() - 1;
+    await s.tick();
+    assert.equal(delivered, "ran check build");
+    assert.ok(s.remove(job.id));
+    assert.equal(s.list().length, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("canonical Telegram menu stays in sync with registered handlers", () => {

@@ -33,6 +33,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   runs it in addition to syntax checks.
 
 ### Added
+- **OpenClaw/Hermes-inspired feature merge**: native `sendMessageDraft` streaming with
+  Stop button, Telegram inline mode, group mention activation + per-topic sessions,
+  voice-note intake, persistent memory with `@file` references, `/checkpoint`/`/rollback`,
+  `/schedule` recurring jobs, `/skills` and `/worktree` (v2), webhook launch mode,
+  Mini App button, `TOOL_POLICY_DENY`, and a dual v1/v2 plugin entrypoint.
 - **Merged Telegram + OpenCode feature audit** (50 focused subagent reviews): wired
   v2 session operations that exist on the real server (fork, compact/summarize,
   revert, diff, shell, command), v2 permission replies, v2 model/agent switching,
