@@ -803,10 +803,11 @@ process.once("SIGTERM", () => { bot.stop("SIGTERM"); opencode.close().finally(()
 // during the wizard, so new commands (e.g. /restart) never appeared otherwise.
 async function publishCommands() {
   try {
-    await telegramApi("setMyCommands", {
-      commands: COMMANDS.map(([command, description]) => ({ command, description })),
-      scope: { type: "all_private_chats" },
-    });
+    const commands = COMMANDS.map(([command, description]) => ({ command, description }));
+    // Publish both scopes: clients read all_private_chats, but the default
+    // scope is what some surfaces fall back to.
+    await telegramApi("setMyCommands", { commands });
+    await telegramApi("setMyCommands", { commands, scope: { type: "all_private_chats" } });
     await telegramApi("setChatMenuButton", { menu_button: { type: "commands" } });
   } catch (e) {
     console.warn(`[telegram] command menu publish skipped: ${scrub(e?.message ?? e)}`);
