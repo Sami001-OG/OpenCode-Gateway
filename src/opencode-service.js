@@ -136,6 +136,7 @@ export class OpencodeService {
     this.textHandlers = new Set(); // streaming text-delta subscribers
     this.lastSeenMessage = new Map(); // sessionID -> newest message id (avoids a pre-POST API call)
     this.streamBuffers = new Map(); // sessionID -> cumulative v2 text delta
+    this.lastEventAt = new Map(); // sessionID -> last SSE event time (liveness)
   }
 
   async init({ serverUrl = "", hostname = "127.0.0.1", port = 4096, timeout = 60000 } = {}) {
@@ -195,6 +196,7 @@ export class OpencodeService {
     const t = event?.type ?? event?.event;
     // v1 uses `properties`; v2 emits the payload as `data`.
     const p = event?.properties ?? event?.data ?? event?.payload ?? {};
+    if (p.sessionID) this.lastEventAt.set(p.sessionID, Date.now());
     // v2 streams incremental text via session.text.* instead of v1 part updates.
     if (t === "session.text.started") {
       this.streamBuffers.set(p.sessionID, "");
@@ -349,9 +351,12 @@ export class OpencodeService {
           `${m?.info?.id}:${(m?.parts ?? []).map((p) => p?.text ?? "").join("")}`).join("|");
         quiet = signature === lastSignature ? quiet + 1 : 0;
         lastSignature = signature;
-        // v2 can hold an assistant record with no text for several seconds
-        // while reasoning streams; give it a real grace window before giving up.
-        if (quiet >= 4 && Date.now() - promptAt >= 5000) {
+        // Only give up when the session has gone quiet too — long reasoning can
+        // hold a text-less assistant record for many seconds while events still
+        // arrive. v2's status endpoint can report idle mid-run, so trust events.
+        const lastEvent = this.lastEventAt.get(sessionID) ?? 0;
+        const eventQuiet = Date.now() - lastEvent >= 4000;
+        if (quiet >= 4 && eventQuiet && Date.now() - promptAt >= 5000) {
           return "(OpenCode finished but returned no text — check /messages for tool activity)";
         }
         continue;

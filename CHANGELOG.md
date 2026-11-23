@@ -32,6 +32,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   prevention, Windows `/cli` quoting and menu/handler consistency. `npm test` now
   runs it in addition to syntax checks.
 
+### Fixed
+- **No-text fallback during long reasoning**: v2 can report idle while reasoning
+  streams; the fallback now also requires 4s of SSE silence, so real answers are
+  no longer dropped.
+- **Stale Telegram command menu**: commands (including `/restart`) are now
+  re-published at every boot with `setMyCommands` + `setChatMenuButton`.
+
 ### Changed
 - **Latency**: first poll now happens immediately (no guaranteed 3s sleep), poll
   interval dropped from 3s to 500ms, the pre-prompt message-list API call was

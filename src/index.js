@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Telegraf, Markup } from "telegraf";
 import { BUILTIN_TOOLS, OpencodeService, errorMessage } from "./opencode-service.js";
+import { COMMANDS } from "./commands.js";
 import { createTelegramAgent, downloadTelegramFile, telegramApi, apiTarget } from "./net.js";
 import { TelegramUI } from "./interactive.js";
 import { Streaming } from "./streaming.js";
@@ -798,6 +799,20 @@ process.once("SIGTERM", () => { bot.stop("SIGTERM"); opencode.close().finally(()
 // Retry launch forever: a VPN flap / blocked route at boot must not kill the bot.
 // Order: saved pin (instant) -> re-resolve (quick list -> full subnet sweep) on
 // every 3rd failure, so even fully-blacklisted networks heal without a restart.
+// Keep Telegram's command menu in sync with the code — setup.js only publishes
+// during the wizard, so new commands (e.g. /restart) never appeared otherwise.
+async function publishCommands() {
+  try {
+    await telegramApi("setMyCommands", {
+      commands: COMMANDS.map(([command, description]) => ({ command, description })),
+      scope: { type: "all_private_chats" },
+    });
+    await telegramApi("setChatMenuButton", { menu_button: { type: "commands" } });
+  } catch (e) {
+    console.warn(`[telegram] command menu publish skipped: ${scrub(e?.message ?? e)}`);
+  }
+}
+
 async function launchWithRetry(attempt = 1) {
   let net = null;
   try { net = await import("./net.js"); } catch {}
@@ -850,6 +865,7 @@ async function launchWithRetry(attempt = 1) {
       bot.launch().catch(onFailure);
       console.log(`[telegram] gateway online in ${bootSecs()}. Send /start in Telegram.`);
     }
+    publishCommands();
   } catch (e) {
     onFailure(e);
   }
