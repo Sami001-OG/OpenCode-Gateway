@@ -124,6 +124,23 @@ test("sendAndWait waits for streamed v2 text instead of returning the no-text fa
   assert.equal(answer, "final answer");
 });
 
+test("sendAndWait picks the newest answer when messages arrive newest-first (v2)", async () => {
+  const svc = new OpencodeService();
+  svc.client = {
+    session: {
+      messages: async () => [
+        { info: { id: "new", role: "assistant", time: { created: Date.now() } }, parts: [{ type: "text", text: "newest" }] },
+        { info: { id: "old", role: "assistant", time: { created: Date.now() - 60000 } }, parts: [{ type: "text", text: "oldest" }] },
+      ],
+      promptAsync: async () => ({}),
+      status: async () => ({ [sid]: { type: "idle" } }),
+    },
+  };
+  const answer = await svc.sendAndWait(user, sid, { parts: [{ type: "text", text: "go" }] },
+    { pollMs: 1, timeoutMs: 1000 });
+  assert.equal(answer, "newest");
+});
+
 test("quoteWindowsArg makes chat-supplied /cli args shell-safe", () => {
   assert.equal(quoteWindowsArg("&calc"), '"&calc"');
   assert.equal(quoteWindowsArg("a|b>c"), '"a|b>c"');

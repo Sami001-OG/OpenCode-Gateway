@@ -134,6 +134,8 @@ export class OpencodeService {
     this.sessionUser = new Map(); // sessionID -> userKey (for live activity)
     this.activity = new Map(); // userKey -> { text, at }
     this.textHandlers = new Set(); // streaming text-delta subscribers
+    this.lastSeenMessage = new Map(); // sessionID -> newest message id (avoids a pre-POST API call)
+    this.streamBuffers = new Map(); // sessionID -> cumulative v2 text delta
   }
 
   async init({ serverUrl = "", hostname = "127.0.0.1", port = 4096, timeout = 60000 } = {}) {
@@ -190,8 +192,22 @@ export class OpencodeService {
   }
   // Called with every server-sent event; keeps per-user "currently doing X".
   noteEventActivity(event) {
-    const t = event?.type;
-    const p = event?.properties ?? {};
+    const t = event?.type ?? event?.event;
+    // v1 uses `properties`; v2 emits the payload as `data`.
+    const p = event?.properties ?? event?.data ?? event?.payload ?? {};
+    // v2 streams incremental text via session.text.* instead of v1 part updates.
+    if (t === "session.text.started") {
+      this.streamBuffers.set(p.sessionID, "");
+    } else if (t === "session.text.delta" && typeof p.delta === "string") {
+      const text = (this.streamBuffers.get(p.sessionID) ?? "") + p.delta;
+      this.streamBuffers.set(p.sessionID, text);
+      const u = this.sessionUser.get(p.sessionID);
+      if (u) for (const fn of this.textHandlers) { try { fn(u, text); } catch {} }
+    } else if (t === "session.text.ended" && typeof p.text === "string") {
+      this.streamBuffers.set(p.sessionID, p.text);
+      const u = this.sessionUser.get(p.sessionID);
+      if (u) for (const fn of this.textHandlers) { try { fn(u, p.text); } catch {} }
+    }
     if (t === "message.part.updated" && p.part?.type === "tool") {
       const u = this.sessionUser.get(p.part.sessionID);
       if (u) this.setActivity(u, TOOL_LABELS[p.part.tool] ?? `🔧 using ${p.part.tool}…`);
@@ -235,13 +251,12 @@ export class OpencodeService {
   // session.status until idle and reads the answer. No single HTTP request
   // outlives a few seconds, so long runs can't die with "fetch failed".
   // Every poll retries — a loaded server may drop individual requests.
-  async sendAndWait(userKey, sessionID, body, { pollMs = 3000, timeoutMs = 45 * 60 * 1000 } = {}) {
+  async sendAndWait(userKey, sessionID, body, { pollMs = 500, timeoutMs = 45 * 60 * 1000 } = {}) {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    let beforeIds = new Set();
-    try {
-      const msgs = unwrap(await this.client.session.messages({ path: { id: sessionID }, query: { limit: 3 } }));
-      for (const m of (Array.isArray(msgs) ? msgs : [])) if (m?.info?.id) beforeIds.add(m.info.id);
-    } catch {}
+    // Reuse the last observed message id instead of spending an API round-trip
+    // before every prompt. It is refreshed after every message read.
+    const beforeId = this.lastSeenMessage.get(sessionID);
+    const beforeIds = new Set(beforeId ? [beforeId] : []);
     // A failed POST is NOT proof nothing started: a flaky route can lose the
     // response after the server accepted the prompt. Blindly retrying would run
     // the task twice (two edits, two shell commands). Check whether it landed.
@@ -281,9 +296,12 @@ export class OpencodeService {
     };
     // poll until idle AND our answer is visible (guards the start-up race)
     const end = Date.now() + timeoutMs;
-    let sawBusy = false, statusErrs = 0, quiet = 0, lastSignature = "";
+    let sawBusy = false, statusErrs = 0, quiet = 0, lastSignature = "", firstPoll = true;
     while (Date.now() < end) {
-      await sleep(pollMs);
+      // Check immediately after the POST — the old fixed 3s sleep before the
+      // first poll added a guaranteed multi-second delay to every answer.
+      if (firstPoll) firstPoll = false;
+      else await sleep(pollMs);
       let st = null, statusOk = true;
       try {
         const all = unwrap(await this.client.session.status());
@@ -301,11 +319,22 @@ export class OpencodeService {
       }
       const list = await readMessages();
       if (!list) continue;
-      const fresh = list.filter((m) => m?.info?.role === "assistant" && !beforeIds.has(m.info.id));
+      if (list[0]?.info?.id) this.lastSeenMessage.set(sessionID, list[0].info.id);
+      // Only assistant messages created after this prompt count. Tracking a
+      // single "last id" let older answers be mistaken for the new one.
+      const fresh = list.filter((m) => {
+        if (m?.info?.role !== "assistant" || beforeIds.has(m.info.id)) return false;
+        const created = m?.info?.time?.created;
+        return typeof created !== "number" || created >= (promptAt - 2000);
+      });
       // v2 sessions can contain assistant records with only tool/reasoning
       // content. Pick the newest one that actually has text instead of failing.
-      const answerWithText = (arr) => [...arr].reverse().find((m) =>
-        (m?.parts ?? []).some((p) => p?.type === "text" && String(p.text ?? "").trim()));
+      // v1 returns messages oldest-first, v2 newest-first — sort by timestamp
+      // so the newest answer wins regardless of transport ordering.
+      const answerWithText = (arr) => [...arr]
+        .sort((a, b) => (a?.info?.time?.created ?? 0) - (b?.info?.time?.created ?? 0))
+        .reverse()
+        .find((m) => (m?.parts ?? []).some((p) => p?.type === "text" && String(p.text ?? "").trim()));
       const pick = answerWithText(fresh);
       if (process.env.GW_DEBUG) console.error("[poll]", JSON.stringify({
         fresh: fresh.length, roles: list.map((m) => m?.info?.role),

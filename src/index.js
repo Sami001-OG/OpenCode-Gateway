@@ -66,6 +66,12 @@ await opencode.init({ serverUrl: OPENCODE_SERVER_URL, hostname: OPENCODE_HOSTNAM
 console.log(`[boot] opencode server ready in ${bootSecs()}${OPENCODE_SERVER_URL ? " (attached to existing server)" : ""}`);
 if (OPENCODE_AGENT) console.log(`[bridge] default agent: ${OPENCODE_AGENT || "(none)"}`);
 
+// Absorb the one-time model/provider warm-up in the background so the first
+// real chat message feels as fast as the CLI. Disable with WARMUP_ON_BOOT=false.
+if (String(process.env.WARMUP_ON_BOOT ?? "true").toLowerCase() === "true") {
+  opencode.prompt("__warmup", "Reply with: OK").catch(() => {});
+}
+
 const telegramAgent = await createTelegramAgent();
 const apiT = apiTarget();
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN, {
@@ -229,28 +235,30 @@ function fmtJson(v, max = 3800) {
 // Bot tokens leak into Bot API error URLs — scrub before any log output.
 const scrub = (s) => String(s ?? "").replace(/\/bot\d+:[\w-]+/g, "/bot<redacted>");
 
-async function runAndReply(ctx, label, fn) {
+async function runAndReply(ctx, label, fn, { quiet = false } = {}) {
   let working = null;
   const keepers = [];
   try {
-    await streaming.begin(key(ctx));
-    await tgCall(() => ctx.sendChatAction("typing")).catch(() => {});
-    working = await tgCall(() => ctx.reply(`${label}… (/abort to stop)`, threadExtra(ctx)));
-    keepers.push(setInterval(() => ctx.sendChatAction("typing").catch(() => {}), 4500));
-    // Live activity: rewrite the temp message as the harness switches tools
-    // (thinking -> grep -> edit -> ...). Throttled to respect Telegram limits.
-    let lastShown = `${label}…`;
-    keepers.push(setInterval(async () => {
-      try {
-        const a = opencode.getActivity(key(ctx));
-        if (a && a !== lastShown && working) {
-          lastShown = a;
-          await tgCall(() => ctx.telegram.editMessageText(ctx.chat.id, working.message_id, undefined, `${a}\n\n(/abort to stop)`), 2).catch(() => {});
-        }
-      } catch {}
-    }, 2500));
+    if (!quiet) {
+      await streaming.begin(key(ctx));
+      await tgCall(() => ctx.sendChatAction("typing")).catch(() => {});
+      working = await tgCall(() => ctx.reply(`${label}… (/abort to stop)`, threadExtra(ctx)));
+      keepers.push(setInterval(() => ctx.sendChatAction("typing").catch(() => {}), 4500));
+      // Live activity: rewrite the temp message as the harness switches tools
+      // (thinking -> grep -> edit -> ...). Throttled to respect Telegram limits.
+      let lastShown = `${label}…`;
+      keepers.push(setInterval(async () => {
+        try {
+          const a = opencode.getActivity(key(ctx));
+          if (a && a !== lastShown && working) {
+            lastShown = a;
+            await tgCall(() => ctx.telegram.editMessageText(ctx.chat.id, working.message_id, undefined, `${a}\n\n(/abort to stop)`), 2).catch(() => {});
+          }
+        } catch {}
+      }, 2500));
+    }
     const out = await fn();
-    await tgCall(() => ctx.deleteMessage(working.message_id)).catch(() => {});
+    if (working) await tgCall(() => ctx.deleteMessage(working.message_id)).catch(() => {});
     working = null;
     await replyLong(ctx, out);
   } catch (e) {
@@ -377,10 +385,10 @@ bot.command("undo", async (ctx) => {
   await runAndReply(ctx, "Reverting", async () => fmtJson(await opencode.revertSession(key(ctx), id)));
 });
 bot.command("diff", async (ctx) => {
-  await runAndReply(ctx, "Diffing", async () => fmtJson(await opencode.sessionDiff(key(ctx))));
+  await runAndReply(ctx, "Diffing", async () => fmtJson(await opencode.sessionDiff(key(ctx))), { quiet: true });
 });
 bot.command("todo", async (ctx) => {
-  await runAndReply(ctx, "Todos", async () => fmtJson(await opencode.sessionTodo(key(ctx))));
+  await runAndReply(ctx, "Todos", async () => fmtJson(await opencode.sessionTodo(key(ctx))), { quiet: true });
 });
 bot.command("messages", async (ctx) => {
   await runAndReply(ctx, "Messages", async () => {
@@ -415,7 +423,7 @@ bot.command("shell", async (ctx) => {
 bot.command("read", async (ctx) => {
   const p = arg(ctx);
   if (!p) return ctx.reply("Usage: /read <path>");
-  await runAndReply(ctx, "Reading", async () => opencode.readFile(p));
+  await runAndReply(ctx, "Reading", async () => opencode.readFile(p), { quiet: true });
 });
 bot.command("edit", async (ctx) => {
   if (!arg(ctx)) return ctx.reply("Usage: /edit <path> :: <old text> :: <new text>");
@@ -428,19 +436,19 @@ bot.command("write", async (ctx) => {
 bot.command("grep", async (ctx) => {
   const q = arg(ctx);
   if (!q) return ctx.reply("Usage: /grep <regex>");
-  await runAndReply(ctx, "Searching", async () => fmtJson(await opencode.findText(q)));
+  await runAndReply(ctx, "Searching", async () => fmtJson(await opencode.findText(q)), { quiet: true });
 });
 bot.command("find", async (ctx) => {
   const q = arg(ctx);
   if (!q) return ctx.reply("Usage: /find <text>");
-  await runAndReply(ctx, "Searching", async () => fmtJson(await opencode.findText(q)));
+  await runAndReply(ctx, "Searching", async () => fmtJson(await opencode.findText(q)), { quiet: true });
 });
 bot.command("glob", async (ctx) => {
   const q = arg(ctx) || "*";
-  await runAndReply(ctx, "Finding files", async () => fmtJson(await opencode.findFiles(q)));
+  await runAndReply(ctx, "Finding files", async () => fmtJson(await opencode.findFiles(q)), { quiet: true });
 });
 bot.command("ls", async (ctx) => {
-  await runAndReply(ctx, "Listing", async () => fmtJson(await opencode.listDir(arg(ctx) || ".")));
+  await runAndReply(ctx, "Listing", async () => fmtJson(await opencode.listDir(arg(ctx) || ".")), { quiet: true });
 });
 bot.command("webfetch", async (ctx) => {
   if (!arg(ctx)) return ctx.reply("Usage: /webfetch <url>");
@@ -496,16 +504,16 @@ bot.command("agents", (ctx) => ui.show(ctx, "agents"));
 bot.command("commands", (ctx) => ui.show(ctx, "commands"));
 bot.command("tools", (ctx) => ui.show(ctx, "tools"));
 bot.command("mcp", async (ctx) => {
-  await runAndReply(ctx, "MCP", async () => fmtJson(await opencode.mcpStatus()));
+  await runAndReply(ctx, "MCP", async () => fmtJson(await opencode.mcpStatus()), { quiet: true });
 });
 bot.command("lspstatus", async (ctx) => {
-  await runAndReply(ctx, "LSP", async () => fmtJson(await opencode.lspStatus()));
+  await runAndReply(ctx, "LSP", async () => fmtJson(await opencode.lspStatus()), { quiet: true });
 });
 bot.command("config", async (ctx) => {
-  await runAndReply(ctx, "Config", async () => fmtJson(await opencode.getConfig()));
+  await runAndReply(ctx, "Config", async () => fmtJson(await opencode.getConfig()), { quiet: true });
 });
 bot.command("health", async (ctx) => {
-  await runAndReply(ctx, "Health", async () => fmtJson(await opencode.health(), 500));
+  await runAndReply(ctx, "Health", async () => fmtJson(await opencode.health(), 500), { quiet: true });
 });
 bot.command("status", (ctx) => {
   const st = opencode.getState(key(ctx));
@@ -524,7 +532,7 @@ bot.command("cli", async (ctx) => {
 });
 bot.command("run", async (ctx) => {
   if (!arg(ctx)) return ctx.reply("Usage: /run <prompt> — one-shot via agent");
-  await runAndReply(ctx, "Running", async () => opencode.prompt(key(ctx), arg(ctx)));
+  await runAndReply(ctx, "Running", async () => opencode.prompt(key(ctx), arg(ctx)), { quiet: !streaming.disabled });
 });
 
 // ----- permissions: approve/deny from phone -----
@@ -660,7 +668,9 @@ bot.on("text", async (ctx) => {
   const withRefs = await memory.expand(ctx.message.text, (p) => opencode.readFile(p));
   const withMemory = withRefs + memory.context();
   if (String(process.env.CHECKPOINT_ON_PROMPT ?? "").toLowerCase() === "true") checkpoints.create("auto");
-  await runAndReply(ctx, "Working", async () => opencode.prompt(key(ctx), withMemory));
+  // With native drafts the draft itself is the progress UI — skip the extra
+  // send/edit/delete round-trips that made chat feel slower than the CLI.
+  await runAndReply(ctx, "Working", async () => opencode.prompt(key(ctx), withMemory), { quiet: !streaming.disabled });
 });
 
 // ----- photos & documents: download -> attach to session -----

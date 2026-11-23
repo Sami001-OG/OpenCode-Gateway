@@ -159,8 +159,12 @@ Permission requests now arrive as a Telegram message with **✅ Allow once / ♾
 ### 🚀 Streaming, groups, automation & memory
 
 - **Native streaming**: answers stream into Telegram's draft UI via `sendMessageDraft`
-  with a real **Stop** button (`TELEGRAM_STREAM=false` to disable). Falls back to the
-  edit-spinner on older clients.
+  with a real **Stop** button (`TELEGRAM_STREAM=false` to disable). Works on both v1
+  and v2 (v2's incremental `session.text.delta` events are accumulated), throttled at
+  250 ms. Falls back to the edit-spinner on older clients.
+- **Fast-path latency**: immediate first poll, 500 ms polling, no pre-prompt API call,
+  no temp message for read-only commands, and an optional boot warm-up
+  (`WARMUP_ON_BOOT=false` to disable).
 - **Inline mode**: `@YourBot <question>` answers you anywhere in Telegram (enable with
   BotFather `/setinline`; optional `INLINE_MODEL`, `INLINE_TIMEOUT_MS`).
 - **Groups + topics**: mention-activated group chats (`GROUPS_ENABLED=false` to opt out),

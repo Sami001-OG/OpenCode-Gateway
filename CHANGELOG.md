@@ -32,6 +32,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   prevention, Windows `/cli` quoting and menu/handler consistency. `npm test` now
   runs it in addition to syntax checks.
 
+### Changed
+- **Latency**: first poll now happens immediately (no guaranteed 3s sleep), poll
+  interval dropped from 3s to 500ms, the pre-prompt message-list API call was
+  removed, and fast read-only commands skip the temp "Working…" send/edit/delete
+  round-trips. A boot-time warm-up prompt (disable with `WARMUP_ON_BOOT=false`)
+  absorbs one-time model initialisation. Measured: warm answers ~1.5–1.9s vs
+  ~6s cold before.
+- **v2 streaming fixed**: v2 emits `session.text.delta` (incremental), now
+  accumulated and fed to Telegram drafts; streaming throttle reduced to 250ms.
+- **Answer correctness**: messages are ordered by timestamp, and only assistant
+  messages created after the current prompt count as its answer.
+
 ### Added
 - **Chat-initiated restart**: `/restart` (and the 🔌 Platform menu button) cleanly closes
   the OpenCode server, clears the pidfile, relaunches the detached daemon and exits.

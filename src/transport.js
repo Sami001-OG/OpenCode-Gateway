@@ -101,7 +101,7 @@ export function normalizeMessage(m) {
     if (c?.type === "text" && typeof c.text === "string") parts.push({ type: "text", text: c.text });
   }
   return {
-    info: { id: m?.id, role: m?.type, sessionID: m?.sessionID, error: m?.error },
+    info: { id: m?.id, role: m?.type, sessionID: m?.sessionID, error: m?.error, time: m?.time },
     parts: parts.length ? parts : [{ type: "text", text: "" }],
   };
 }

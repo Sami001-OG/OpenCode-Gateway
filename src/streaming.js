@@ -3,7 +3,7 @@
 // delivered as a normal message. Falls back silently on older Bot APIs.
 import { telegramApi } from "./net.js";
 
-const THROTTLE_MS = 1000;
+const THROTTLE_MS = 250;
 const MAX_DRAFT = 4096;
 
 export class Streaming {
